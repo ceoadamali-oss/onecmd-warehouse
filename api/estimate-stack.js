@@ -23,8 +23,10 @@ export default async function handler(req, res) {
   }
 
   const apiKey = process.env.VITE_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+  console.log(`[API Init] VITE_OPENAI_API_KEY exists: ${!!apiKey}`);
+
   if (!apiKey) {
-    return res.status(500).json({ error: 'OpenAI API key not configured on server' });
+    return res.status(500).json({ error: 'OpenAI API key not configured on server. Please set VITE_OPENAI_API_KEY in Vercel settings.' });
   }
 
   const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
@@ -68,8 +70,8 @@ Do not return any markdown formatting or extra text. Just the JSON object.`;
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ error: `OpenAI API returned error: ${errText}` });
+      console.error(`OpenAI API returned status ${response.status}`);
+      return res.status(401).json({ error: 'AI analysis failed: Invalid or unauthorized API key config. Please check Vercel environment variables.' });
     }
 
     const data = await response.json();
@@ -81,6 +83,6 @@ Do not return any markdown formatting or extra text. Just the JSON object.`;
     const parsed = JSON.parse(resultText);
     return res.status(200).json(parsed);
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: 'Failed to process tire stack image. Please try again.' });
   }
 }
