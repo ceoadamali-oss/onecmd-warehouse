@@ -32,12 +32,16 @@ export default async function handler(req, res) {
 
   const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
 
-  const prompt = `You are a professional tire inventory receiving scanner. Extract the tire specifications from this tire sticker or label image.
+  const prompt = `You are a professional tire and wheel inventory receiving scanner. 
+Analyze this sticker or label image. First, determine if this sticker belongs to a TIRE or a WHEEL.
 Return a clean JSON object with the following fields:
 {
-  "brand": string (e.g., "Centara", capitalized),
-  "model": string (e.g., "Snow Cutter", capitalized),
-  "size": string (e.g., "205/55R16" or "33x12.50R20"),
+  "product_type": "tire" or "wheel",
+  "brand": string (capitalized brand, e.g., "Centara" or "Commander"),
+  "model": string (capitalized model, e.g., "Snow Cutter" or "H709"),
+  "size": string (e.g. "205/55R16" or "20x10"),
+  
+  // IF TIRE:
   "load_index": string (e.g., "91" or "94"),
   "speed_rating": string (e.g., "T" or "H"),
   "load_range": string (e.g., "SL" or "XL"),
@@ -46,8 +50,17 @@ Return a clean JSON object with the following fields:
   "has_3pmsf": boolean (true if the three-peak mountain snowflake symbol is visible on the sticker),
   "winter_approved": boolean (true if dedicated winter tire OR has_3pmsf is true),
   "utqg": string (the Treadwear/Traction/Temperature rating if visible, e.g., "420 A A", otherwise "N/A"),
-  "extra_details": string (any other secondary sticker info like Ply Rating, DOT code if visible, etc., or empty string),
-  "description": string (e.g., "Centara Snow Cutter 205/55R16 91T Winter Tire")
+  "ply_rating": string (look for PLY RATING, e.g. "10-ply", otherwise "N/A"),
+  
+  // IF WHEEL:
+  "bolt_pattern": string (the PCD bolt pattern, e.g. "5x127/139.7" or "5x114.3"),
+  "offset": string (the ET offset, e.g. "-19" or "45"),
+  "center_bore": string (the CB center bore in mm, e.g. "87" or "73.1"),
+  "finish": string (the wheel finish/color, e.g. "Gloss Black Milled"),
+  "part_number": string (the manufacturer part number, e.g. "H709-201052119GBM"),
+  
+  "extra_details": string (any secondary sticker info),
+  "description": string (e.g., "Commander H709 20x10 Gloss Black Milled Wheel")
 }
 Do not return any markdown formatting or extra text. Just the JSON object.`;
 
@@ -93,6 +106,6 @@ Do not return any markdown formatting or extra text. Just the JSON object.`;
     const parsed = JSON.parse(resultText);
     return res.status(200).json(parsed);
   } catch (error) {
-    return res.status(500).json({ error: 'Failed to process tire sticker. Please try again.' });
+    return res.status(500).json({ error: 'Failed to process sticker. Please try again.' });
   }
 }

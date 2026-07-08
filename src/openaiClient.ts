@@ -1,6 +1,7 @@
 const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY || '';
 
 export interface TireStickerData {
+  product_type?: 'tire' | 'wheel';
   brand: string;
   model: string;
   size: string;
@@ -17,6 +18,14 @@ export interface TireStickerData {
   extra_details?: string;
   ply_rating?: string;
   dot_code?: string;
+  
+  // Wheel fields
+  bolt_pattern?: string;
+  offset?: string;
+  center_bore?: string;
+  finish?: string;
+  part_number?: string;
+  
   description: string;
 }
 

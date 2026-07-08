@@ -36,6 +36,7 @@ export default async function handler(req, res) {
 Extract the tire specifications embossed directly into the black rubber. The text can be dusty, dirty, or low-contrast, so scan very carefully.
 Return a clean JSON object with the following fields:
 {
+  "product_type": "tire",
   "brand": string (e.g. "Michelin", capitalized),
   "model": string (e.g. "Defender LTX", capitalized),
   "size": string (e.g. "275/65R18" or "35x12.50R20"),

@@ -441,6 +441,10 @@ export default function App() {
       const parsed = scanMode === 'sidewall'
         ? await parseTireSidewall(base64)
         : await parseTireSticker(base64);
+      
+      if (!parsed.product_type) {
+        parsed.product_type = 'tire';
+      }
       setExtractedSpecs(parsed);
 
       const inferredWinter = inferWinterApprovedFromCatalog(parsed.brand, parsed.model, parsed);
@@ -482,24 +486,48 @@ export default function App() {
       showTemporaryMessage('error', 'Please enter a valid quantity.');
       return;
     }
-
     setSavingReceive(true);
     try {
       const generatedSku = formatSku(extractedSpecs.brand, extractedSpecs.size, extractedSpecs.model || '');
-      
-      // Build metadata notes for managers to view secondary specs (UTQG, Ply, DOT, etc.)
+      const isWheel = extractedSpecs.product_type === 'wheel';
+
+      // Build metadata notes for managers to view secondary specs (UTQG, Ply, DOT, PCD, Offset, etc.)
       let logNotes = '';
-      if (extractedSpecs.utqg && extractedSpecs.utqg !== 'N/A') {
-        logNotes += `UTQG: ${extractedSpecs.utqg}`;
-      }
-      if (extractedSpecs.extra_details) {
-        if (logNotes) logNotes += ' | ';
-        logNotes += extractedSpecs.extra_details;
+      if (isWheel) {
+        if (extractedSpecs.part_number) logNotes += `Part: ${extractedSpecs.part_number}`;
+        if (extractedSpecs.bolt_pattern) {
+          if (logNotes) logNotes += ' | ';
+          logNotes += `PCD: ${extractedSpecs.bolt_pattern}`;
+        }
+        if (extractedSpecs.offset) {
+          if (logNotes) logNotes += ' | ';
+          logNotes += `ET: ${extractedSpecs.offset}`;
+        }
+        if (extractedSpecs.center_bore) {
+          if (logNotes) logNotes += ' | ';
+          logNotes += `CB: ${extractedSpecs.center_bore}`;
+        }
+      } else {
+        if (extractedSpecs.dot_code && extractedSpecs.dot_code !== 'N/A') {
+          logNotes += `DOT: ${extractedSpecs.dot_code}`;
+        }
+        if (extractedSpecs.ply_rating && extractedSpecs.ply_rating !== 'N/A') {
+          if (logNotes) logNotes += ' | ';
+          logNotes += `Ply: ${extractedSpecs.ply_rating}`;
+        }
+        if (extractedSpecs.utqg && extractedSpecs.utqg !== 'N/A') {
+          if (logNotes) logNotes += ' | ';
+          logNotes += `UTQG: ${extractedSpecs.utqg}`;
+        }
+        if (extractedSpecs.extra_details) {
+          if (logNotes) logNotes += ' | ';
+          logNotes += extractedSpecs.extra_details;
+        }
       }
 
       const txData = {
         sku: generatedSku,
-        product_type: 'tire' as const,
+        product_type: isWheel ? ('wheel' as const) : ('tire' as const),
         transaction_type: 'receive' as const,
         quantity: qty,
         to_location: activeLocation!,
@@ -510,30 +538,52 @@ export default function App() {
       };
 
       if (isOnline) {
-        // Create catalog entry if it doesn't exist
-        if (!skuExists) {
-          let catalogName = `${extractedSpecs.brand} ${extractedSpecs.model}`;
-          if (extractedSpecs.ply_rating && extractedSpecs.ply_rating !== 'N/A') {
-            catalogName += ` (${extractedSpecs.ply_rating})`;
-          }
-          if (winterApproved) {
-            catalogName += ' 3PMSF';
+        const table = isWheel ? 'wheels_catalog' : 'tires_catalog';
+
+        // Check if SKU exists
+        const { data: existingItem } = await supabase
+          .from(table)
+          .select('sku')
+          .eq('sku', generatedSku)
+          .maybeSingle();
+        const itemExists = !!existingItem;
+
+        if (!itemExists) {
+          let catalogName = `${extractedSpecs.brand} ${extractedSpecs.model || ''}`;
+          if (isWheel) {
+            if (extractedSpecs.finish) catalogName += ` ${extractedSpecs.finish}`;
+            catalogName += ` (${extractedSpecs.size}`;
+            if (extractedSpecs.bolt_pattern) catalogName += ` PCD:${extractedSpecs.bolt_pattern}`;
+            if (extractedSpecs.offset) catalogName += ` ET:${extractedSpecs.offset}`;
+            if (extractedSpecs.center_bore) catalogName += ` CB:${extractedSpecs.center_bore}`;
+            catalogName += ')';
+          } else {
+            if (extractedSpecs.ply_rating && extractedSpecs.ply_rating !== 'N/A') {
+              catalogName += ` (${extractedSpecs.ply_rating})`;
+            }
+            if (winterApproved) {
+              catalogName += ' 3PMSF';
+            }
           }
 
-          const { error: upsertErr } = await supabase.from('tires_catalog').upsert({
+          const insertPayload: any = {
             sku: generatedSku,
             brand: extractedSpecs.brand,
             size: extractedSpecs.size,
             name: catalogName,
-            price: 120,
+            price: isWheel ? 180 : 120,
             stock: 0,
-            type: extractedSpecs.season || 'All-Season',
-            winter_approved: winterApproved,
             image: '',
             location_counts: {}
-          });
+          };
+          if (!isWheel) {
+            insertPayload.type = extractedSpecs.season || 'All-Season';
+            insertPayload.winter_approved = winterApproved;
+          }
+
+          const { error: upsertErr } = await supabase.from(table).upsert(insertPayload);
           if (upsertErr) throw upsertErr;
-        } else if (winterApproved) {
+        } else if (!isWheel && winterApproved) {
           const { error: winterErr } = await supabase
             .from('tires_catalog')
             .update({ winter_approved: true })
@@ -544,7 +594,7 @@ export default function App() {
         const { error: insertErr } = await supabase.from('inventory_transactions').insert(txData);
         if (insertErr) throw insertErr;
 
-        await updateStockLevel(generatedSku, 'tire', activeLocation!, qty);
+        await updateStockLevel(generatedSku, isWheel ? 'wheel' : 'tire', activeLocation!, qty);
       } else {
         // Cache offline
         offlineStorage.enqueue(txData);
@@ -1386,52 +1436,203 @@ export default function App() {
                           {skuExists ? 'Existing SKU' : 'New Catalog Product'}
                         </span>
                       )}
-                    </div>
+                                   <div className="spec-grid gap-y-3 gap-x-2">
+                      <div className="col-span-2">
+                        <span className="spec-grid__label">Product Type</span>
+                        <select
+                          value={extractedSpecs.product_type || 'tire'}
+                          onChange={(e) => {
+                            const val = e.target.value as 'tire' | 'wheel';
+                            setExtractedSpecs({ ...extractedSpecs, product_type: val });
+                          }}
+                          className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                        >
+                          <option value="tire">🚗 Tire</option>
+                          <option value="wheel">⭕ Wheel</option>
+                        </select>
+                      </div>
 
-                    <div className="spec-grid">
-                      <div>
-                        <span className="spec-grid__label">Brand</span>
-                        <span className="spec-grid__value">{extractedSpecs.brand}</span>
-                      </div>
-                      <div>
-                        <span className="spec-grid__label">Model / Pattern</span>
-                        <span className="spec-grid__value">{extractedSpecs.model}</span>
-                      </div>
-                      <div>
-                        <span className="spec-grid__label">Size</span>
-                        <span className="spec-grid__value">{extractedSpecs.size}</span>
-                      </div>
-                      <div>
-                        <span className="spec-grid__label">Speed/Load Rating</span>
-                        <span className="spec-grid__value">{extractedSpecs.load_index}{extractedSpecs.speed_rating}</span>
-                      </div>
-                      <div>
-                        <span className="spec-grid__label">Load Range / XL</span>
-                        <span className="spec-grid__value">{extractedSpecs.load_range} ({extractedSpecs.xl_designation === 'Yes' ? 'XL' : 'Standard'})</span>
-                      </div>
-                      <div>
-                        <span className="spec-grid__label">Season</span>
-                        <span className="spec-grid__value">{extractedSpecs.season}</span>
-                      </div>
-                      {extractedSpecs.ply_rating && extractedSpecs.ply_rating !== 'N/A' && (
-                        <div>
-                          <span className="spec-grid__label">Ply Rating</span>
-                          <span className="spec-grid__value">{extractedSpecs.ply_rating}</span>
-                        </div>
+                      {extractedSpecs.product_type === 'wheel' ? (
+                        <>
+                          <div>
+                            <span className="spec-grid__label">Brand</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.brand || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, brand: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Model</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.model || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, model: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Size</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.size || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, size: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Bolt Pattern (PCD)</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.bolt_pattern || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, bolt_pattern: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Offset (ET)</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.offset || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, offset: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Center Bore (CB)</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.center_bore || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, center_bore: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Finish / Color</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.finish || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, finish: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Part Number</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.part_number || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, part_number: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div>
+                            <span className="spec-grid__label">Brand</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.brand || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, brand: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Model</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.model || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, model: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Size</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.size || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, size: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Load/Speed</span>
+                            <div className="flex gap-1 mt-1">
+                              <input
+                                type="text"
+                                placeholder="LI"
+                                value={extractedSpecs.load_index || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, load_index: e.target.value })}
+                                className="bg-glass-dark border border-glass rounded-lg px-1.5 py-1 text-xs text-white focus:outline-none focus:border-primary w-1/2 text-center"
+                              />
+                              <input
+                                type="text"
+                                placeholder="SR"
+                                value={extractedSpecs.speed_rating || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, speed_rating: e.target.value })}
+                                className="bg-glass-dark border border-glass rounded-lg px-1.5 py-1 text-xs text-white focus:outline-none focus:border-primary w-1/2 text-center"
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Load Range</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.load_range || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, load_range: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Season</span>
+                            <select
+                              value={extractedSpecs.season || 'All-Season'}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setExtractedSpecs({ ...extractedSpecs, season: val });
+                                if (val === 'Winter') {
+                                  setWinterApproved(true);
+                                }
+                              }}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            >
+                              <option value="All-Season">All-Season</option>
+                              <option value="Winter">Winter</option>
+                              <option value="Summer">Summer</option>
+                              <option value="All-Terrain">All-Terrain</option>
+                            </select>
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">Ply Rating</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.ply_rating || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, ply_rating: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div>
+                            <span className="spec-grid__label">DOT Code</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.dot_code || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, dot_code: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                          <div className="col-span-2">
+                            <span className="spec-grid__label">UTQG Rating</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.utqg || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, utqg: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                            />
+                          </div>
+                        </>
                       )}
-                      {extractedSpecs.dot_code && extractedSpecs.dot_code !== 'N/A' && (
-                        <div>
-                          <span className="spec-grid__label">DOT Code</span>
-                          <span className="spec-grid__value">{extractedSpecs.dot_code}</span>
-                        </div>
-                      )}
-                      {extractedSpecs.utqg && extractedSpecs.utqg !== 'N/A' && (
-                        <div>
-                          <span className="spec-grid__label">UTQG Rating</span>
-                          <span className="spec-grid__value">{extractedSpecs.utqg}</span>
-                        </div>
-                      )}
-                    </div>
+                    </div>       </div>
 
                     <WinterApprovedToggle
                       enabled={winterApproved}
