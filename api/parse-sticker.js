@@ -45,6 +45,8 @@ Return a clean JSON object with the following fields:
   "season": string ("Winter", "Summer", "All-Season", or "All-Terrain"),
   "has_3pmsf": boolean (true if the three-peak mountain snowflake symbol is visible on the sticker),
   "winter_approved": boolean (true if dedicated winter tire OR has_3pmsf is true),
+  "utqg": string (the Treadwear/Traction/Temperature rating if visible, e.g., "420 A A", otherwise "N/A"),
+  "extra_details": string (any other secondary sticker info like Ply Rating, DOT code if visible, etc., or empty string),
   "description": string (e.g., "Centara Snow Cutter 205/55R16 91T Winter Tire")
 }
 Do not return any markdown formatting or extra text. Just the JSON object.`;

@@ -13,6 +13,8 @@ export interface TireStickerData {
   has_3pmsf: boolean;
   /** True for dedicated winter tires OR 3PMSF-rated all-weather / A/T tires. */
   winter_approved: boolean;
+  utqg?: string;
+  extra_details?: string;
   description: string;
 }
 

@@ -480,6 +480,16 @@ export default function App() {
     try {
       const generatedSku = formatSku(extractedSpecs.brand, extractedSpecs.size, extractedSpecs.model || '');
       
+      // Build metadata notes for managers to view secondary specs (UTQG, Ply, DOT, etc.)
+      let logNotes = '';
+      if (extractedSpecs.utqg && extractedSpecs.utqg !== 'N/A') {
+        logNotes += `UTQG: ${extractedSpecs.utqg}`;
+      }
+      if (extractedSpecs.extra_details) {
+        if (logNotes) logNotes += ' | ';
+        logNotes += extractedSpecs.extra_details;
+      }
+
       const txData = {
         sku: generatedSku,
         product_type: 'tire' as const,
@@ -488,6 +498,7 @@ export default function App() {
         to_location: activeLocation!,
         supplier_container: '',
         employee_id: currentUser ? currentUser.name : activeLocation!,
+        notes: logNotes || undefined,
         status: 'completed' as const
       };
 
