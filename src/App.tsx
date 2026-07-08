@@ -21,7 +21,7 @@ import {
   X
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
-import { parseTireSticker, estimateStackCount, inferWinterApprovedFromCatalog } from './openaiClient';
+import { parseTireSticker, parseTireSidewall, estimateStackCount, inferWinterApprovedFromCatalog } from './openaiClient';
 import type { TireStickerData } from './openaiClient';
 import { offlineStorage, updateStockLevel } from './offlineStorage';
 import type { PendingTransaction } from './offlineStorage';
@@ -121,6 +121,7 @@ export default function App() {
   const [winterApprovedAiDetected, setWinterApprovedAiDetected] = useState<boolean>(false);
   const [receiveScanError, setReceiveScanError] = useState<string>('');
   const [undoingIntake, setUndoingIntake] = useState<boolean>(false);
+  const [scanMode, setScanMode] = useState<'sticker' | 'sidewall'>('sticker');
 
   // Core Feature State: Transaction History Logs & Corrections
   const [recentTransactions, setRecentTransactions] = useState<PendingTransaction[]>([]);
@@ -437,7 +438,9 @@ export default function App() {
     setWinterApproved(false);
     setWinterApprovedAiDetected(false);
     try {
-      const parsed = await parseTireSticker(base64);
+      const parsed = scanMode === 'sidewall'
+        ? await parseTireSidewall(base64)
+        : await parseTireSticker(base64);
       setExtractedSpecs(parsed);
 
       const inferredWinter = inferWinterApprovedFromCatalog(parsed.brand, parsed.model, parsed);
@@ -445,7 +448,11 @@ export default function App() {
       setWinterApprovedAiDetected(Boolean(parsed.has_3pmsf || parsed.winter_approved));
 
       if (!parsed.brand || !parsed.size) {
-        setReceiveScanError('Could not read brand or size. Retake in better light with the full sticker in frame.');
+        setReceiveScanError(
+          scanMode === 'sidewall'
+            ? 'Could not read sidewall brand or size. Retake in better light with tire markings clearly visible and in frame.'
+            : 'Could not read brand or size. Retake in better light with the full sticker in frame.'
+        );
         return;
       }
       
@@ -505,9 +512,13 @@ export default function App() {
       if (isOnline) {
         // Create catalog entry if it doesn't exist
         if (!skuExists) {
-          const catalogName = winterApproved
-            ? `${extractedSpecs.brand} ${extractedSpecs.model} 3PMSF`
-            : `${extractedSpecs.brand} ${extractedSpecs.model}`;
+          let catalogName = `${extractedSpecs.brand} ${extractedSpecs.model}`;
+          if (extractedSpecs.ply_rating && extractedSpecs.ply_rating !== 'N/A') {
+            catalogName += ` (${extractedSpecs.ply_rating})`;
+          }
+          if (winterApproved) {
+            catalogName += ' 3PMSF';
+          }
 
           const { error: upsertErr } = await supabase.from('tires_catalog').upsert({
             sku: generatedSku,
@@ -1294,10 +1305,36 @@ export default function App() {
               <h2>Receive Inventory Intake</h2>
             </div>
 
+            <div className="flex items-center justify-between bg-glass border border-glass rounded-xl p-3 mb-2">
+              <span className="font-semibold text-sm">Scan Mode:</span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setScanMode('sticker')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    scanMode === 'sticker'
+                      ? 'bg-primary text-black shadow-lg shadow-primary/20'
+                      : 'bg-glass border border-glass text-gray-400 hover:text-white'
+                  }`}
+                >
+                  📄 Paper Sticker
+                </button>
+                <button
+                  onClick={() => setScanMode('sidewall')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    scanMode === 'sidewall'
+                      ? 'bg-primary text-black shadow-lg shadow-primary/20'
+                      : 'bg-glass border border-glass text-gray-400 hover:text-white'
+                  }`}
+                >
+                  ⭕ Sidewall Rubber
+                </button>
+              </div>
+            </div>
+
             {!receivePhoto ? (
               <ScanViewfinder
-                label="Take Photo of Tire Label"
-                hint="Point camera straight at the sticker — include brand, size, and snowflake symbol if present"
+                label={scanMode === 'sidewall' ? "Take Photo of Tire Sidewall" : "Take Photo of Tire Label"}
+                hint={scanMode === 'sidewall' ? "Point camera straight at the embossed rubber text — include DOT code and sizing specs" : "Point camera straight at the sticker — include brand, size, and snowflake symbol if present"}
                 accent="lime"
                 onCapture={processReceiveSticker}
               />
@@ -1376,6 +1413,24 @@ export default function App() {
                         <span className="spec-grid__label">Season</span>
                         <span className="spec-grid__value">{extractedSpecs.season}</span>
                       </div>
+                      {extractedSpecs.ply_rating && extractedSpecs.ply_rating !== 'N/A' && (
+                        <div>
+                          <span className="spec-grid__label">Ply Rating</span>
+                          <span className="spec-grid__value">{extractedSpecs.ply_rating}</span>
+                        </div>
+                      )}
+                      {extractedSpecs.dot_code && extractedSpecs.dot_code !== 'N/A' && (
+                        <div>
+                          <span className="spec-grid__label">DOT Code</span>
+                          <span className="spec-grid__value">{extractedSpecs.dot_code}</span>
+                        </div>
+                      )}
+                      {extractedSpecs.utqg && extractedSpecs.utqg !== 'N/A' && (
+                        <div>
+                          <span className="spec-grid__label">UTQG Rating</span>
+                          <span className="spec-grid__value">{extractedSpecs.utqg}</span>
+                        </div>
+                      )}
                     </div>
 
                     <WinterApprovedToggle
