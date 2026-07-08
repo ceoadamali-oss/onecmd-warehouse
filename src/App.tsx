@@ -21,7 +21,7 @@ import {
   X
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
-import { parseTireSticker, parseTireSidewall, estimateStackCount, inferWinterApprovedFromCatalog } from './openaiClient';
+import { parseTireSticker, parseTireSidewall, parseBulkStack, estimateStackCount, inferWinterApprovedFromCatalog } from './openaiClient';
 import type { TireStickerData } from './openaiClient';
 import { offlineStorage, updateStockLevel } from './offlineStorage';
 import type { PendingTransaction } from './offlineStorage';
@@ -113,6 +113,9 @@ export default function App() {
   // Core Feature State: Receive
   const [receivePhoto, setReceivePhoto] = useState<string | null>(null);
   const [extractedSpecs, setExtractedSpecs] = useState<TireStickerData | null>(null);
+  const [bulkExtractedSpecs, setBulkExtractedSpecs] = useState<TireStickerData[] | null>(null);
+  const [bulkQuantities, setBulkQuantities] = useState<{ [key: number]: number }>({});
+  const [savingBulkReceive, setSavingBulkReceive] = useState<boolean>(false);
   const [extracting, setExtracting] = useState<boolean>(false);
   const [quantityInput, setQuantityInput] = useState<string>('');
   const [savingReceive, setSavingReceive] = useState<boolean>(false);
@@ -121,7 +124,7 @@ export default function App() {
   const [winterApprovedAiDetected, setWinterApprovedAiDetected] = useState<boolean>(false);
   const [receiveScanError, setReceiveScanError] = useState<string>('');
   const [undoingIntake, setUndoingIntake] = useState<boolean>(false);
-  const [scanMode, setScanMode] = useState<'sticker' | 'sidewall'>('sticker');
+  const [scanMode, setScanMode] = useState<'sticker' | 'sidewall' | 'bulk'>('sticker');
 
   // Core Feature State: Transaction History Logs & Corrections
   const [recentTransactions, setRecentTransactions] = useState<PendingTransaction[]>([]);
@@ -438,6 +441,26 @@ export default function App() {
     setWinterApproved(false);
     setWinterApprovedAiDetected(false);
     try {
+      if (scanMode === 'bulk') {
+        const result = await parseBulkStack(base64);
+        const items = result.items || [];
+        items.forEach(item => {
+          if (!item.product_type) item.product_type = 'tire';
+        });
+        setBulkExtractedSpecs(items);
+        
+        const defaultQuants: { [key: number]: number } = {};
+        items.forEach((_, idx) => {
+          defaultQuants[idx] = 1;
+        });
+        setBulkQuantities(defaultQuants);
+
+        if (items.length === 0) {
+          setReceiveScanError('No tire or wheel stickers detected. Retake in better light with stickers clearly visible.');
+        }
+        return;
+      }
+
       const parsed = scanMode === 'sidewall'
         ? await parseTireSidewall(base64)
         : await parseTireSticker(base64);
@@ -614,6 +637,147 @@ export default function App() {
       showTemporaryMessage('error', `Failed to save received stock: ${e.message}`);
     } finally {
       setSavingReceive(false);
+    }
+  };
+
+  const handleSaveBulkReceive = async () => {
+    if (!bulkExtractedSpecs || bulkExtractedSpecs.length === 0) return;
+    setSavingBulkReceive(true);
+    try {
+      let savedCount = 0;
+      let totalQty = 0;
+
+      for (let i = 0; i < bulkExtractedSpecs.length; i++) {
+        const item = bulkExtractedSpecs[i];
+        const qty = bulkQuantities[i] || 1;
+        if (qty <= 0) continue;
+
+        const generatedSku = formatSku(item.brand, item.size, item.model || '');
+        const isWheel = item.product_type === 'wheel';
+
+        // Build metadata notes
+        let logNotes = '';
+        if (isWheel) {
+          if (item.part_number) logNotes += `Part: ${item.part_number}`;
+          if (item.bolt_pattern) {
+            if (logNotes) logNotes += ' | ';
+            logNotes += `PCD: ${item.bolt_pattern}`;
+          }
+          if (item.offset) {
+            if (logNotes) logNotes += ' | ';
+            logNotes += `ET: ${item.offset}`;
+          }
+          if (item.center_bore) {
+            if (logNotes) logNotes += ' | ';
+            logNotes += `CB: ${item.center_bore}`;
+          }
+        } else {
+          if (item.dot_code && item.dot_code !== 'N/A') {
+            logNotes += `DOT: ${item.dot_code}`;
+          }
+          if (item.ply_rating && item.ply_rating !== 'N/A') {
+            if (logNotes) logNotes += ' | ';
+            logNotes += `Ply: ${item.ply_rating}`;
+          }
+          if (item.utqg && item.utqg !== 'N/A') {
+            if (logNotes) logNotes += ' | ';
+            logNotes += `UTQG: ${item.utqg}`;
+          }
+          if (item.extra_details) {
+            if (logNotes) logNotes += ' | ';
+            logNotes += item.extra_details;
+          }
+        }
+
+        const txData = {
+          sku: generatedSku,
+          product_type: isWheel ? ('wheel' as const) : ('tire' as const),
+          transaction_type: 'receive' as const,
+          quantity: qty,
+          to_location: activeLocation!,
+          supplier_container: '',
+          employee_id: currentUser ? currentUser.name : activeLocation!,
+          notes: logNotes || undefined,
+          status: 'completed' as const
+        };
+
+        if (isOnline) {
+          const table = isWheel ? 'wheels_catalog' : 'tires_catalog';
+
+          // Check if SKU exists
+          const { data: existingItem } = await supabase
+            .from(table)
+            .select('sku')
+            .eq('sku', generatedSku)
+            .maybeSingle();
+          const itemExists = !!existingItem;
+
+          if (!itemExists) {
+            let catalogName = `${item.brand} ${item.model || ''}`;
+            if (isWheel) {
+              if (item.finish) catalogName += ` ${item.finish}`;
+              catalogName += ` (${item.size}`;
+              if (item.bolt_pattern) catalogName += ` PCD:${item.bolt_pattern}`;
+              if (item.offset) catalogName += ` ET:${item.offset}`;
+              if (item.center_bore) catalogName += ` CB:${item.center_bore}`;
+              catalogName += ')';
+            } else {
+              if (item.ply_rating && item.ply_rating !== 'N/A') {
+                catalogName += ` (${item.ply_rating})`;
+              }
+              if (item.winter_approved || item.has_3pmsf) {
+                catalogName += ' 3PMSF';
+              }
+            }
+
+            const insertPayload: any = {
+              sku: generatedSku,
+              brand: item.brand,
+              size: item.size,
+              name: catalogName,
+              price: isWheel ? 180 : 120,
+              stock: 0,
+              image: '',
+              location_counts: {}
+            };
+            if (!isWheel) {
+              insertPayload.type = item.season || 'All-Season';
+              insertPayload.winter_approved = Boolean(item.winter_approved || item.has_3pmsf);
+            }
+
+            const { error: upsertErr } = await supabase.from(table).upsert(insertPayload);
+            if (upsertErr) throw upsertErr;
+          } else if (!isWheel && (item.winter_approved || item.has_3pmsf)) {
+            const { error: winterErr } = await supabase
+              .from('tires_catalog')
+              .update({ winter_approved: true })
+              .eq('sku', generatedSku);
+            if (winterErr) throw winterErr;
+          }
+
+          const { error: insertErr } = await supabase.from('inventory_transactions').insert(txData);
+          if (insertErr) throw insertErr;
+
+          await updateStockLevel(generatedSku, isWheel ? 'wheel' : 'tire', activeLocation!, qty);
+        } else {
+          offlineStorage.enqueue(txData);
+          setPendingSyncCount(offlineStorage.getQueue().length);
+        }
+
+        savedCount++;
+        totalQty += qty;
+      }
+
+      showTemporaryMessage('success', `Bulk intake recorded: ${totalQty} items across ${savedCount} products added to ${locationName}!`);
+      // Reset state
+      setReceivePhoto(null);
+      setBulkExtractedSpecs(null);
+      setBulkQuantities({});
+      setActiveTab('dashboard');
+    } catch (err: any) {
+      showTemporaryMessage('error', `Failed to save bulk scan: ${err.message}`);
+    } finally {
+      setSavingBulkReceive(false);
     }
   };
 
@@ -1349,7 +1513,16 @@ export default function App() {
         {activeTab === 'receive' && (
           <div className="space-y-6 flex-1 flex flex-col">
             <div className="flex items-center gap-2 mb-2">
-              <button onClick={() => { setActiveTab('dashboard'); setReceivePhoto(null); setExtractedSpecs(null); setQuantityInput(''); setWinterApproved(false); setReceiveScanError(''); }} className="btn-secondary py-2 px-3">
+              <button onClick={() => { 
+                setActiveTab('dashboard'); 
+                setReceivePhoto(null); 
+                setExtractedSpecs(null); 
+                setBulkExtractedSpecs(null);
+                setBulkQuantities({});
+                setQuantityInput(''); 
+                setWinterApproved(false); 
+                setReceiveScanError(''); 
+              }} className="btn-secondary py-2 px-3">
                 <ArrowLeftRight className="w-4 h-4 rotate-180" /> Back
               </button>
               <h2>Receive Inventory Intake</h2>
@@ -1668,6 +1841,375 @@ export default function App() {
                       {skuExists ? 'Confirm & Add to Stock' : 'Create New Product & Initialize Stock'}
                     </button>
                     </div>
+                  </div>
+                )}
+
+                {bulkExtractedSpecs && !receiveScanError && (
+                  <div className="receive-result-stack space-y-6 flex-1 flex flex-col">
+                    <div className="flex items-center justify-between border-b border-glass pb-2">
+                      <h3 className="font-bold text-emerald-400">Extracted Bulk Stack ({bulkExtractedSpecs.length} items)</h3>
+                      <button
+                        onClick={() => {
+                          const newSpecs = [...bulkExtractedSpecs];
+                          newSpecs.push({
+                            product_type: 'tire',
+                            brand: 'New Brand',
+                            model: 'New Model',
+                            size: 'Size',
+                            load_index: '',
+                            speed_rating: '',
+                            load_range: '',
+                            xl_designation: 'No',
+                            season: 'All-Season',
+                            has_3pmsf: false,
+                            winter_approved: false,
+                            description: 'Manually added tire'
+                          });
+                          const newQuants = { ...bulkQuantities };
+                          newQuants[newSpecs.length - 1] = 1;
+                          setBulkExtractedSpecs(newSpecs);
+                          setBulkQuantities(newQuants);
+                        }}
+                        className="btn-secondary py-1.5 px-3 text-xs flex items-center gap-1.5"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Add Product
+                      </button>
+                    </div>
+
+                    <div className="space-y-6 overflow-y-auto max-h-[55vh] pr-1">
+                      {bulkExtractedSpecs.map((item, idx) => (
+                        <div key={idx} className="glass-panel space-y-4 glass-panel--success relative receive-specs-card">
+                          {/* Trash button to delete item */}
+                          <button
+                            onClick={() => {
+                              const newSpecs = bulkExtractedSpecs.filter((_, i) => i !== idx);
+                              const newQuants = { ...bulkQuantities };
+                              delete newQuants[idx];
+                              // Re-map keys to indices
+                              const remappedQuants: { [key: number]: number } = {};
+                              newSpecs.forEach((_, i) => {
+                                remappedQuants[i] = i >= idx ? bulkQuantities[i + 1] || 1 : bulkQuantities[i] || 1;
+                              });
+                              setBulkExtractedSpecs(newSpecs);
+                              setBulkQuantities(remappedQuants);
+                            }}
+                            className="absolute top-3 right-3 text-red-400 hover:text-red-300 p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
+                            title="Delete Item"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+
+                          <h4 className="font-bold text-sm text-emerald-400/90 border-b border-glass pb-1.5 pr-8">
+                            Product #{idx + 1}: {item.brand} {item.model}
+                          </h4>
+
+                          {/* Editable spec grid */}
+                          <div className="spec-grid gap-y-4 gap-x-3">
+                            <div className="col-span-2">
+                              <span className="spec-grid__label">Product Type</span>
+                              <select
+                                value={item.product_type || 'tire'}
+                                onChange={(e) => {
+                                  const val = e.target.value as 'tire' | 'wheel';
+                                  const updated = [...bulkExtractedSpecs];
+                                  updated[idx] = { ...updated[idx], product_type: val };
+                                  setBulkExtractedSpecs(updated);
+                                }}
+                                className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              >
+                                <option value="tire">🚗 Tire</option>
+                                <option value="wheel">⭕ Wheel</option>
+                              </select>
+                            </div>
+
+                            {item.product_type === 'wheel' ? (
+                              <>
+                                <div className="col-span-2">
+                                  <span className="spec-grid__label">Brand</span>
+                                  <input
+                                    type="text"
+                                    value={item.brand || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], brand: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div className="col-span-2">
+                                  <span className="spec-grid__label">Model</span>
+                                  <input
+                                    type="text"
+                                    value={item.model || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], model: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div className="col-span-2">
+                                  <span className="spec-grid__label">Finish / Color</span>
+                                  <input
+                                    type="text"
+                                    value={item.finish || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], finish: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div className="col-span-2">
+                                  <span className="spec-grid__label">Part Number</span>
+                                  <input
+                                    type="text"
+                                    value={item.part_number || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], part_number: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="spec-grid__label">Size</span>
+                                  <input
+                                    type="text"
+                                    value={item.size || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], size: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="spec-grid__label">Bolt Pattern (PCD)</span>
+                                  <input
+                                    type="text"
+                                    value={item.bolt_pattern || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], bolt_pattern: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="spec-grid__label">Offset (ET)</span>
+                                  <input
+                                    type="text"
+                                    value={item.offset || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], offset: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="spec-grid__label">Center Bore (CB)</span>
+                                  <input
+                                    type="text"
+                                    value={item.center_bore || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], center_bore: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="col-span-2">
+                                  <span className="spec-grid__label">Brand</span>
+                                  <input
+                                    type="text"
+                                    value={item.brand || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], brand: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div className="col-span-2">
+                                  <span className="spec-grid__label">Model</span>
+                                  <input
+                                    type="text"
+                                    value={item.model || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], model: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="spec-grid__label">Size</span>
+                                  <input
+                                    type="text"
+                                    value={item.size || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], size: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="spec-grid__label">Load/Speed</span>
+                                  <div className="flex gap-1 mt-1.5">
+                                    <input
+                                      type="text"
+                                      placeholder="LI"
+                                      value={item.load_index || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], load_index: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="bg-glass-dark border border-glass rounded-xl px-2 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-1/2 text-center"
+                                    />
+                                    <input
+                                      type="text"
+                                      placeholder="SR"
+                                      value={item.speed_rating || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], speed_rating: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="bg-glass-dark border border-glass rounded-xl px-2 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-1/2 text-center"
+                                    />
+                                  </div>
+                                </div>
+                                <div>
+                                  <span className="spec-grid__label">Load Range</span>
+                                  <input
+                                    type="text"
+                                    value={item.load_range || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], load_range: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="spec-grid__label">Season</span>
+                                  <select
+                                    value={item.season || 'All-Season'}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], season: val };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  >
+                                    <option value="All-Season">All-Season</option>
+                                    <option value="Winter">Winter</option>
+                                    <option value="Summer">Summer</option>
+                                    <option value="All-Terrain">All-Terrain</option>
+                                  </select>
+                                </div>
+                                <div>
+                                  <span className="spec-grid__label">Ply Rating</span>
+                                  <input
+                                    type="text"
+                                    value={item.ply_rating || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], ply_rating: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="spec-grid__label">DOT Code</span>
+                                  <input
+                                    type="text"
+                                    value={item.dot_code || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], dot_code: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                                <div className="col-span-2">
+                                  <span className="spec-grid__label">UTQG Rating</span>
+                                  <input
+                                    type="text"
+                                    value={item.utqg || ''}
+                                    onChange={(e) => {
+                                      const updated = [...bulkExtractedSpecs];
+                                      updated[idx] = { ...updated[idx], utqg: e.target.value };
+                                      setBulkExtractedSpecs(updated);
+                                    }}
+                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                  />
+                                </div>
+                              </>
+                            )}
+                          </div>
+
+                          {/* Quantity selectors */}
+                          <div className="flex items-center justify-between border-t border-glass pt-3 mt-2">
+                            <span className="font-semibold text-sm">Quantity:</span>
+                            <div className="flex items-center gap-3">
+                              <button
+                                onClick={() => {
+                                  const val = bulkQuantities[idx] || 1;
+                                  if (val > 1) {
+                                    setBulkQuantities({ ...bulkQuantities, [idx]: val - 1 });
+                                  }
+                                }}
+                                className="w-8 h-8 rounded-lg bg-glass border border-glass flex items-center justify-center font-bold text-lg hover:bg-glass-hover text-white"
+                              >
+                                -
+                              </button>
+                              <span className="font-bold text-lg text-white">{bulkQuantities[idx] || 1}</span>
+                              <button
+                                onClick={() => {
+                                  const val = bulkQuantities[idx] || 1;
+                                  setBulkQuantities({ ...bulkQuantities, [idx]: val + 1 });
+                                }}
+                                className="w-8 h-8 rounded-lg bg-glass border border-glass flex items-center justify-center font-bold text-lg hover:bg-glass-hover text-white"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={handleSaveBulkReceive}
+                      disabled={savingBulkReceive || bulkExtractedSpecs.length === 0}
+                      className="w-full btn-primary py-4 mt-4"
+                    >
+                      {savingBulkReceive ? <RotateCw className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
+                      Save All Bulk Intake ({Object.values(bulkQuantities).reduce((a, b) => a + b, 0)} Items)
+                    </button>
                   </div>
                 )}
               </div>

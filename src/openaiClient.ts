@@ -272,3 +272,21 @@ Do not return any markdown formatting or extra text. Just the JSON object.`;
   
   return result as StackEstimateData;
 }
+
+export async function parseBulkStack(base64Image: string): Promise<{ items: TireStickerData[] }> {
+  const response = await fetch('/api/parse-bulk-stack', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ base64Image })
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`AI Bulk Scan Error: ${response.statusText} - ${errText}`);
+  }
+
+  const result = await response.json();
+  return result as { items: TireStickerData[] };
+}
