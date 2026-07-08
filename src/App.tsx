@@ -1436,7 +1436,7 @@ export default function App() {
                           {skuExists ? 'Existing SKU' : 'New Catalog Product'}
                         </span>
                       )}
-                                   <div className="spec-grid gap-y-3 gap-x-2">
+                    <div className="spec-grid gap-y-4 gap-x-3">
                       <div className="col-span-2">
                         <span className="spec-grid__label">Product Type</span>
                         <select
@@ -1445,7 +1445,7 @@ export default function App() {
                             const val = e.target.value as 'tire' | 'wheel';
                             setExtractedSpecs({ ...extractedSpecs, product_type: val });
                           }}
-                          className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                          className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                         >
                           <option value="tire">🚗 Tire</option>
                           <option value="wheel">⭕ Wheel</option>
@@ -1454,22 +1454,40 @@ export default function App() {
 
                       {extractedSpecs.product_type === 'wheel' ? (
                         <>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Brand</span>
                             <input
                               type="text"
                               value={extractedSpecs.brand || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, brand: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Model</span>
                             <input
                               type="text"
                               value={extractedSpecs.model || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, model: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                            />
+                          </div>
+                          <div className="col-span-2">
+                            <span className="spec-grid__label">Finish / Color</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.finish || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, finish: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                            />
+                          </div>
+                          <div className="col-span-2">
+                            <span className="spec-grid__label">Part Number</span>
+                            <input
+                              type="text"
+                              value={extractedSpecs.part_number || ''}
+                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, part_number: e.target.value })}
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
                           <div>
@@ -1478,7 +1496,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.size || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, size: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
                           <div>
@@ -1487,7 +1505,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.bolt_pattern || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, bolt_pattern: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
                           <div>
@@ -1496,7 +1514,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.offset || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, offset: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
                           <div>
@@ -1505,46 +1523,28 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.center_bore || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, center_bore: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
-                            />
-                          </div>
-                          <div>
-                            <span className="spec-grid__label">Finish / Color</span>
-                            <input
-                              type="text"
-                              value={extractedSpecs.finish || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, finish: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
-                            />
-                          </div>
-                          <div>
-                            <span className="spec-grid__label">Part Number</span>
-                            <input
-                              type="text"
-                              value={extractedSpecs.part_number || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, part_number: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
                         </>
                       ) : (
                         <>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Brand</span>
                             <input
                               type="text"
                               value={extractedSpecs.brand || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, brand: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Model</span>
                             <input
                               type="text"
                               value={extractedSpecs.model || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, model: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
                           <div>
@@ -1553,25 +1553,25 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.size || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, size: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
                           <div>
                             <span className="spec-grid__label">Load/Speed</span>
-                            <div className="flex gap-1 mt-1">
+                            <div className="flex gap-1 mt-1.5">
                               <input
                                 type="text"
                                 placeholder="LI"
                                 value={extractedSpecs.load_index || ''}
                                 onChange={(e) => setExtractedSpecs({ ...extractedSpecs, load_index: e.target.value })}
-                                className="bg-glass-dark border border-glass rounded-lg px-1.5 py-1 text-xs text-white focus:outline-none focus:border-primary w-1/2 text-center"
+                                className="bg-glass-dark border border-glass rounded-xl px-2 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-1/2 text-center"
                               />
                               <input
                                 type="text"
                                 placeholder="SR"
                                 value={extractedSpecs.speed_rating || ''}
                                 onChange={(e) => setExtractedSpecs({ ...extractedSpecs, speed_rating: e.target.value })}
-                                className="bg-glass-dark border border-glass rounded-lg px-1.5 py-1 text-xs text-white focus:outline-none focus:border-primary w-1/2 text-center"
+                                className="bg-glass-dark border border-glass rounded-xl px-2 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-1/2 text-center"
                               />
                             </div>
                           </div>
@@ -1581,7 +1581,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.load_range || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, load_range: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
                           <div>
@@ -1595,7 +1595,7 @@ export default function App() {
                                   setWinterApproved(true);
                                 }
                               }}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             >
                               <option value="All-Season">All-Season</option>
                               <option value="Winter">Winter</option>
@@ -1609,7 +1609,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.ply_rating || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, ply_rating: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
                           <div>
@@ -1618,7 +1618,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.dot_code || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, dot_code: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
                           <div className="col-span-2">
@@ -1627,7 +1627,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.utqg || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, utqg: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-primary w-full mt-1"
+                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
                         </>
