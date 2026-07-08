@@ -27,13 +27,6 @@ export interface StackEstimateData {
  * Calls OpenAI GPT-4o-mini Vision to extract specs from a tire label image.
  */
 export async function parseTireSticker(base64Image: string): Promise<TireStickerData> {
-  if (!OPENAI_API_KEY) {
-    throw new Error('OpenAI API Key is missing. Please check your .env file.');
-  }
-
-  // Remove data:image/...;base64, prefix if present
-  const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
-
   const prompt = `You are a professional tire inventory receiving scanner. Extract the tire specifications from this tire sticker or label image.
 Return a clean JSON object with the following fields:
 {
@@ -51,44 +44,60 @@ Return a clean JSON object with the following fields:
 }
 Do not return any markdown formatting or extra text. Just the JSON object.`;
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: prompt },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:image/jpeg;base64,${base64Data}`
+  let response;
+  if (import.meta.env.DEV && OPENAI_API_KEY) {
+    const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
+    response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/jpeg;base64,${base64Data}`
+                }
               }
-            }
-          ]
-        }
-      ],
-      response_format: { type: 'json_object' }
-    })
-  });
+            ]
+          }
+        ],
+        response_format: { type: 'json_object' }
+      })
+    });
+  } else {
+    response = await fetch('/api/parse-sticker', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ base64Image })
+    });
+  }
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`OpenAI API Error: ${response.statusText} - ${errText}`);
+    throw new Error(`AI Extraction Error: ${response.statusText} - ${errText}`);
   }
 
   const result = await response.json();
-  const jsonString = result.choices?.[0]?.message?.content;
-  if (!jsonString) {
-    throw new Error('Failed to retrieve content from OpenAI response.');
+  
+  if (import.meta.env.DEV && OPENAI_API_KEY) {
+    const jsonString = result.choices?.[0]?.message?.content;
+    if (!jsonString) {
+      throw new Error('Failed to retrieve content from OpenAI response.');
+    }
+    return JSON.parse(jsonString) as TireStickerData;
   }
-
-  return JSON.parse(jsonString) as TireStickerData;
+  
+  return result as TireStickerData;
 }
 
 /** Lines/brands that are always 3PMSF winter-approved at ATK when AI misses the symbol. */
@@ -105,12 +114,6 @@ export function inferWinterApprovedFromCatalog(brand: string, model: string, par
  * Calls OpenAI GPT-4o-mini Vision to estimate the count of stacked tires.
  */
 export async function estimateStackCount(base64Image: string): Promise<StackEstimateData> {
-  if (!OPENAI_API_KEY) {
-    throw new Error('OpenAI API Key is missing. Please check your .env file.');
-  }
-
-  const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
-
   const prompt = `Analyze the attached image showing stacks of stored tires in a warehouse.
 Estimate the quantity of tires visible or partially visible in this stack, taking into account depth and columns.
 Return a clean JSON object with the following fields:
@@ -122,42 +125,58 @@ Return a clean JSON object with the following fields:
 }
 Do not return any markdown formatting or extra text. Just the JSON object.`;
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: prompt },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:image/jpeg;base64,${base64Data}`
+  let response;
+  if (import.meta.env.DEV && OPENAI_API_KEY) {
+    const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
+    response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/jpeg;base64,${base64Data}`
+                }
               }
-            }
-          ]
-        }
-      ],
-      response_format: { type: 'json_object' }
-    })
-  });
+            ]
+          }
+        ],
+        response_format: { type: 'json_object' }
+      })
+    });
+  } else {
+    response = await fetch('/api/estimate-stack', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ base64Image })
+    });
+  }
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`OpenAI API Error: ${response.statusText} - ${errText}`);
+    throw new Error(`AI Estimation Error: ${response.statusText} - ${errText}`);
   }
 
   const result = await response.json();
-  const jsonString = result.choices?.[0]?.message?.content;
-  if (!jsonString) {
-    throw new Error('Failed to retrieve content from OpenAI response.');
+  
+  if (import.meta.env.DEV && OPENAI_API_KEY) {
+    const jsonString = result.choices?.[0]?.message?.content;
+    if (!jsonString) {
+      throw new Error('Failed to retrieve content from OpenAI response.');
+    }
+    return JSON.parse(jsonString) as StackEstimateData;
   }
-
-  return JSON.parse(jsonString) as StackEstimateData;
+  
+  return result as StackEstimateData;
 }
