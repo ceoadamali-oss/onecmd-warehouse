@@ -11,7 +11,7 @@ export interface PendingTransaction {
   supplier_container?: string;
   employee_id: string;
   notes?: string;
-  status: 'pending' | 'completed';
+  status: 'pending' | 'completed' | 'needs_correction' | 'corrected';
   created_at: string;
 }
 

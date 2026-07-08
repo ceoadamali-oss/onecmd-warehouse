@@ -17,7 +17,8 @@ import {
   Send,
   Check,
   AlertCircle,
-  Printer
+  Printer,
+  X
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import { parseTireSticker, estimateStackCount, inferWinterApprovedFromCatalog } from './openaiClient';
@@ -27,7 +28,7 @@ import type { PendingTransaction } from './offlineStorage';
 import { ScanViewfinder } from './components/ScanViewfinder';
 import { WinterApprovedToggle } from './components/WinterApprovedToggle';
 
-type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders';
+type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs';
 
 export interface CustomerOrder {
   id: string;
@@ -43,11 +44,47 @@ export interface CustomerOrder {
   created_at: string;
 }
 
+export const STAFF_PINS: Record<string, { role: 'worker' | 'manager'; name: string; location: string }> = {
+  // Moncton
+  '1111': { role: 'worker', name: 'Moncton Worker 1', location: 'moncton' },
+  '1112': { role: 'worker', name: 'Moncton Worker 2', location: 'moncton' },
+  '9999': { role: 'manager', name: 'Moncton Manager', location: 'moncton' },
+  // Oromocto
+  '2221': { role: 'worker', name: 'Oromocto Worker 1', location: 'oromocto' },
+  '2222': { role: 'worker', name: 'Oromocto Worker 2', location: 'oromocto' },
+  '8888': { role: 'manager', name: 'Oromocto Manager', location: 'oromocto' },
+  // Saint John
+  '3331': { role: 'worker', name: 'Saint John Worker 1', location: 'saint-john' },
+  '3332': { role: 'worker', name: 'Saint John Worker 2', location: 'saint-john' },
+  '7777': { role: 'manager', name: 'Saint John Manager', location: 'saint-john' },
+  // Fredericton
+  '4441': { role: 'worker', name: 'Fredericton Worker 1', location: 'fredericton' },
+  '4442': { role: 'worker', name: 'Fredericton Worker 2', location: 'fredericton' },
+  '6666': { role: 'manager', name: 'Fredericton Manager', location: 'fredericton' }
+};
+
+export const formatSku = (brand: string, size: string, model: string) => {
+  const cleanBrand = brand.trim().toUpperCase().replace(/[^A-Z0-9]/g, '-').replace(/-+/g, '-');
+  const cleanModel = model.trim().toUpperCase().replace(/[^A-Z0-9]/g, '-').replace(/-+/g, '-');
+  // Normalize size: 225/65R17 -> 225-65-17
+  const cleanSize = size.trim().toUpperCase()
+    .replace(/[R]/g, '')             // remove R
+    .replace(/[^0-9.]/g, '-')        // replace non-numeric with hyphens
+    .replace(/-+/g, '-')             // collapse duplicate hyphens
+    .replace(/^-|-$/g, '');          // trim leading/trailing hyphens
+  
+  return `${cleanBrand}-${cleanSize}-${cleanModel}`;
+};
+
 export default function App() {
   // Authentication & Location State
   const [activeLocation, setActiveLocation] = useState<string | null>(null);
   const [locationName, setLocationName] = useState<string>('');
   const [pinInput, setPinInput] = useState<string>('');
+  const [currentUser, setCurrentUser] = useState<{ role: 'worker' | 'manager'; name: string; location: string } | null>(() => {
+    const saved = localStorage.getItem('onecmd_current_user');
+    return saved ? JSON.parse(saved) : null;
+  });
   const [authError, setAuthError] = useState<string>('');
 
   // General App State
@@ -84,6 +121,17 @@ export default function App() {
   const [winterApprovedAiDetected, setWinterApprovedAiDetected] = useState<boolean>(false);
   const [receiveScanError, setReceiveScanError] = useState<string>('');
   const [undoingIntake, setUndoingIntake] = useState<boolean>(false);
+
+  // Core Feature State: Transaction History Logs & Corrections
+  const [recentTransactions, setRecentTransactions] = useState<PendingTransaction[]>([]);
+  const [managerPinModalOpen, setManagerPinModalOpen] = useState<boolean>(false);
+  const [managerPinInput, setManagerPinInput] = useState<string>('');
+  const [managerPinError, setManagerPinError] = useState<string>('');
+  const [editingTransaction, setEditingTransaction] = useState<PendingTransaction | null>(null);
+  const [newQtyInput, setNewQtyInput] = useState<string>('');
+  const [flagModalOpen, setFlagModalOpen] = useState<boolean>(false);
+  const [flagTx, setFlagTx] = useState<PendingTransaction | null>(null);
+  const [flagNoteInput, setFlagNoteInput] = useState<string>('');
 
   // Core Feature State: Transfer
   const [transferDest, setTransferDest] = useState<string>('');
@@ -169,8 +217,32 @@ export default function App() {
     if (activeLocation) {
       loadPendingIncomingTransfers();
       loadPendingOrders();
+      if (activeTab === 'logs') {
+        fetchRecentTransactions();
+      }
     }
   }, [activeLocation, activeTab]);
+
+  const fetchRecentTransactions = async () => {
+    if (!activeLocation) return;
+    try {
+      if (isOnline) {
+        const { data, error } = await supabase
+          .from('inventory_transactions')
+          .select('*')
+          .or(`to_location.eq.${activeLocation},from_location.eq.${activeLocation}`)
+          .order('created_at', { ascending: false })
+          .limit(50);
+        if (error) throw error;
+        setRecentTransactions(data || []);
+      } else {
+        setRecentTransactions(offlineStorage.getQueue());
+      }
+    } catch (e: any) {
+      console.error('Failed to fetch recent transactions:', e);
+      setRecentTransactions(offlineStorage.getQueue());
+    }
+  };
 
   const loadPendingIncomingTransfers = async () => {
     if (!activeLocation) return;
@@ -279,33 +351,32 @@ export default function App() {
       return;
     }
 
-    // Standard secure pin validation (Seeded pins)
-    const pinMap: Record<string, string> = {
-      'moncton': 'atk_moncton_123',
-      'oromocto': 'atk_oromocto_123',
-      'halifax': 'atk_halifax_123',
-      'saint-john': 'atk_saintjohn_123'
-    };
-
-    if (pinInput === pinMap[activeLocation]) {
+    const employee = STAFF_PINS[pinInput];
+    if (employee && employee.location === activeLocation) {
       const selected = locations.find(l => l.id === activeLocation);
       const name = selected ? selected.name : activeLocation;
       setLocationName(name);
+      setCurrentUser(employee);
+      
       localStorage.setItem('onecmd_active_location', activeLocation);
       localStorage.setItem('onecmd_active_location_name', name);
+      localStorage.setItem('onecmd_current_user', JSON.stringify(employee));
+      
       setPinInput('');
       setAuthError('');
-      showTemporaryMessage('success', `Logged in successfully at ${name}`);
+      showTemporaryMessage('success', `Welcome back, ${employee.name}! Logged in at ${name}.`);
     } else {
-      setAuthError('Invalid location Password/PIN. Please try again.');
+      setAuthError('Invalid 4-digit Employee PIN for this location. Please try again.');
     }
   };
 
   const handleLogout = () => {
     localStorage.removeItem('onecmd_active_location');
     localStorage.removeItem('onecmd_active_location_name');
+    localStorage.removeItem('onecmd_current_user');
     setActiveLocation(null);
     setLocationName('');
+    setCurrentUser(null);
     setActiveTab('dashboard');
   };
 
@@ -380,7 +451,7 @@ export default function App() {
       
       // Query if SKU exists in master catalog
       if (isOnline && parsed.size) {
-        const generatedSku = `${parsed.brand.substring(0,3).toUpperCase()}-${parsed.size.replace(/\//g, '')}-${parsed.model.substring(0,3).toUpperCase()}`;
+        const generatedSku = formatSku(parsed.brand, parsed.size, parsed.model || '');
         const { data } = await supabase
           .from('tires_catalog')
           .select('sku')
@@ -407,8 +478,7 @@ export default function App() {
 
     setSavingReceive(true);
     try {
-      // 1. Generate clean SKU if missing
-      const generatedSku = `${extractedSpecs.brand.substring(0,3).toUpperCase()}-${extractedSpecs.size.replace(/\//g, '')}-${extractedSpecs.model.substring(0,3).toUpperCase()}`;
+      const generatedSku = formatSku(extractedSpecs.brand, extractedSpecs.size, extractedSpecs.model || '');
       
       const txData = {
         sku: generatedSku,
@@ -417,7 +487,7 @@ export default function App() {
         quantity: qty,
         to_location: activeLocation!,
         supplier_container: '',
-        employee_id: activeLocation!,
+        employee_id: currentUser ? currentUser.name : activeLocation!,
         status: 'completed' as const
       };
 
@@ -472,6 +542,161 @@ export default function App() {
       showTemporaryMessage('error', `Failed to save received stock: ${e.message}`);
     } finally {
       setSavingReceive(false);
+    }
+  };
+
+  const handleOpenEditTransaction = (tx: PendingTransaction) => {
+    setEditingTransaction(tx);
+    setNewQtyInput(String(tx.quantity));
+    setManagerPinInput('');
+    setManagerPinError('');
+    setManagerPinModalOpen(true);
+  };
+
+  const handleSaveTransactionEdit = async () => {
+    if (!editingTransaction || !activeLocation) return;
+    
+    // Check PIN matches location manager pin
+    const managerPins: Record<string, string> = {
+      'moncton': '9999',
+      'oromocto': '8888',
+      'saint-john': '7777',
+      'fredericton': '6666'
+    };
+
+    if (managerPinInput !== managerPins[activeLocation]) {
+      setManagerPinError('Incorrect 4-digit Manager PIN. Override denied.');
+      return;
+    }
+
+    const newQty = parseInt(newQtyInput);
+    if (isNaN(newQty) || newQty < 0) {
+      setManagerPinError('Please enter a valid quantity.');
+      return;
+    }
+
+    try {
+      if (isOnline) {
+        // 1. Calculate difference and update stock counts
+        const diff = newQty - editingTransaction.quantity;
+        const targetLoc = editingTransaction.to_location || editingTransaction.from_location || activeLocation;
+        await updateStockLevel(editingTransaction.sku, editingTransaction.product_type, targetLoc, diff);
+
+        // 2. Update transaction quantity and status in Supabase
+        const { error } = await supabase
+          .from('inventory_transactions')
+          .update({
+            quantity: newQty,
+            status: 'completed', // reset status to completed if it was flagged
+            notes: `Corrected by ${currentUser?.name || 'Manager'} on override. Original: ${editingTransaction.quantity}`
+          })
+          .eq('id', editingTransaction.id);
+
+        if (error) throw error;
+      } else {
+        // Edit offline queue
+        const queue = offlineStorage.getQueue();
+        const found = queue.find(item => item.id === editingTransaction.id);
+        if (found) {
+          found.quantity = newQty;
+          found.notes = `Corrected locally. Original: ${editingTransaction.quantity}`;
+          localStorage.setItem('onecmd_offline_transactions', JSON.stringify(queue));
+        }
+      }
+
+      showTemporaryMessage('success', 'Transaction successfully updated and inventory counts recalculated.');
+      setManagerPinModalOpen(false);
+      setEditingTransaction(null);
+      fetchRecentTransactions();
+    } catch (e: any) {
+      setManagerPinError(`Failed to update transaction: ${e.message}`);
+    }
+  };
+
+  const handleSaveTransactionDelete = async () => {
+    if (!editingTransaction || !activeLocation) return;
+    
+    // Check PIN matches location manager pin
+    const managerPins: Record<string, string> = {
+      'moncton': '9999',
+      'oromocto': '8888',
+      'saint-john': '7777',
+      'fredericton': '6666'
+    };
+
+    if (managerPinInput !== managerPins[activeLocation]) {
+      setManagerPinError('Incorrect 4-digit Manager PIN. Override denied.');
+      return;
+    }
+
+    try {
+      if (isOnline) {
+        // 1. Revert stock counts completely
+        const targetLoc = editingTransaction.to_location || editingTransaction.from_location || activeLocation;
+        await updateStockLevel(editingTransaction.sku, editingTransaction.product_type, targetLoc, -editingTransaction.quantity);
+
+        // 2. Delete transaction from Supabase
+        const { error } = await supabase
+          .from('inventory_transactions')
+          .delete()
+          .eq('id', editingTransaction.id);
+
+        if (error) throw error;
+      } else {
+        // Delete from offline queue
+        offlineStorage.dequeue(editingTransaction.id);
+      }
+
+      showTemporaryMessage('success', 'Transaction deleted and inventory counts reverted.');
+      setManagerPinModalOpen(false);
+      setEditingTransaction(null);
+      fetchRecentTransactions();
+    } catch (e: any) {
+      setManagerPinError(`Failed to delete transaction: ${e.message}`);
+    }
+  };
+
+  const handleOpenFlagTransaction = (tx: PendingTransaction) => {
+    setFlagTx(tx);
+    setFlagNoteInput('');
+    setFlagModalOpen(true);
+  };
+
+  const handleSaveFlagCorrection = async () => {
+    if (!flagTx) return;
+    if (!flagNoteInput.trim()) {
+      showTemporaryMessage('error', 'Please enter a note explaining the correction.');
+      return;
+    }
+
+    try {
+      if (isOnline) {
+        const { error } = await supabase
+          .from('inventory_transactions')
+          .update({
+            status: 'needs_correction',
+            notes: `FLAGGED FOR REVIEW: ${flagNoteInput} (Logged by ${currentUser?.name || 'Worker'})`
+          })
+          .eq('id', flagTx.id);
+
+        if (error) throw error;
+      } else {
+        // Edit offline queue
+        const queue = offlineStorage.getQueue();
+        const found = queue.find(item => item.id === flagTx.id);
+        if (found) {
+          found.status = 'needs_correction';
+          found.notes = `FLAGGED FOR REVIEW: ${flagNoteInput}`;
+          localStorage.setItem('onecmd_offline_transactions', JSON.stringify(queue));
+        }
+      }
+
+      showTemporaryMessage('success', 'Transaction successfully flagged for review. A manager will check this note.');
+      setFlagModalOpen(false);
+      setFlagTx(null);
+      fetchRecentTransactions();
+    } catch (e: any) {
+      showTemporaryMessage('error', `Failed to flag transaction: ${e.message}`);
     }
   };
 
@@ -572,7 +797,7 @@ export default function App() {
 
     setSendingTransfer(true);
     try {
-      const generatedSku = `${transferSpecs.brand.substring(0,3).toUpperCase()}-${transferSpecs.size.replace(/\//g, '')}-${transferSpecs.model.substring(0,3).toUpperCase()}`;
+      const generatedSku = formatSku(transferSpecs.brand, transferSpecs.size, transferSpecs.model || '');
 
       const txData = {
         sku: generatedSku,
@@ -581,7 +806,7 @@ export default function App() {
         quantity: qty,
         from_location: activeLocation!,
         to_location: transferDest,
-        employee_id: activeLocation!,
+        employee_id: currentUser ? currentUser.name : activeLocation!,
         status: 'pending' as const // Two-step handshake remains pending until destination confirms receipt
       };
 
@@ -971,6 +1196,22 @@ export default function App() {
                   </div>
                 </div>
                 <span className="badge badge-amber">Audit</span>
+              </button>
+
+              <button 
+                onClick={() => setActiveTab('logs')}
+                className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-rose-500"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-rose-500/10 flex items-center justify-center border border-rose-500/20 text-rose-600">
+                    <Lock className="w-5 h-5" />
+                  </div>
+                  <div className="text-left">
+                    <span className="action-card__title">Transaction Logs & Corrections</span>
+                    <span className="action-card__sub">View past logs and request stock corrections</span>
+                  </div>
+                </div>
+                <span className="badge badge-rose">Logs</span>
               </button>
             </div>
 
@@ -1751,7 +1992,231 @@ export default function App() {
             )}
           </div>
         )}
+
+        {/* tab: Transaction Logs & Corrections */}
+        {activeTab === 'logs' && (
+          <div className="space-y-6 flex-1 flex flex-col">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => setActiveTab('dashboard')} 
+                  className="btn-secondary py-2 px-3 text-xs"
+                >
+                  <ArrowLeftRight className="w-4 h-4 rotate-180" /> Back
+                </button>
+                <h2>Transaction History & Stock Alignments</h2>
+              </div>
+              <button 
+                onClick={fetchRecentTransactions}
+                className="btn-secondary py-2 px-3 text-xs flex items-center gap-1"
+              >
+                <RotateCw className="w-3.5 h-3.5" /> Refresh
+              </button>
+            </div>
+
+            <div className="glass-panel space-y-4 flex-1 flex flex-col min-h-[400px]">
+              <div className="border-b border-glass pb-3 flex justify-between items-center">
+                <h3 className="text-xs font-semibold tracking-wider text-gray-400 uppercase">Recent Logs ({locationName})</h3>
+                <span className="text-xs text-gray-500 font-medium">{isOnline ? 'Synced Real-Time' : 'Cached Offline'}</span>
+              </div>
+
+              {recentTransactions.length === 0 ? (
+                <div className="text-center py-16 text-gray-500 text-sm flex-1 flex flex-col justify-center">
+                  No recent inventory transactions found.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs text-slate-300">
+                    <thead>
+                      <tr className="border-b border-glass text-gray-500 font-semibold uppercase tracking-wider">
+                        <th className="py-3 px-2">Type</th>
+                        <th className="py-3 px-2">SKU</th>
+                        <th className="py-3 px-2">Qty</th>
+                        <th className="py-3 px-2">Staff</th>
+                        <th className="py-3 px-2">Date</th>
+                        <th className="py-3 px-2">Notes</th>
+                        <th className="py-3 px-2 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recentTransactions.map((tx) => {
+                        const isFailed = tx.status === 'needs_correction';
+                        return (
+                          <tr key={tx.id} className={`border-b border-glass/40 hover:bg-white/5 transition-colors ${isFailed ? 'bg-rose-500/5' : ''}`}>
+                            <td className="py-3 px-2 font-medium capitalize">
+                              <span className={`badge ${tx.transaction_type === 'receive' ? 'badge-green' : 'badge-violet'}`}>
+                                {tx.transaction_type}
+                              </span>
+                            </td>
+                            <td className="py-3 px-2 font-mono font-bold tracking-tight text-white">{tx.sku}</td>
+                            <td className="py-3 px-2 text-slate-200 font-bold">{tx.quantity}</td>
+                            <td className="py-3 px-2 text-slate-400">{tx.employee_id || 'System'}</td>
+                            <td className="py-3 px-2 text-slate-500">
+                              {new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </td>
+                            <td className="py-3 px-2 text-slate-400 max-w-[200px] truncate" title={tx.notes}>
+                              {isFailed && <span className="text-rose-400 font-semibold mr-1">[!]</span>}
+                              {tx.notes || '-'}
+                            </td>
+                            <td className="py-3 px-2 text-right space-x-1 whitespace-nowrap">
+                              <button
+                                onClick={() => handleOpenFlagTransaction(tx)}
+                                className="btn-secondary py-1 px-2.5 text-[10px] text-amber-500 hover:bg-amber-500/10"
+                                title="Flag for correction"
+                              >
+                                Flag
+                              </button>
+                              <button
+                                onClick={() => handleOpenEditTransaction(tx)}
+                                className="btn-primary py-1 px-2.5 text-[10px]"
+                                title="Manager PIN Override Required"
+                              >
+                                Edit
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </main>
+
+      {/* Modal: Manager PIN Override */}
+      {managerPinModalOpen && editingTransaction && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="glass-panel w-full max-w-md space-y-6 relative border-amber-500/20 bg-slate-900/95">
+            <button 
+              onClick={() => { setManagerPinModalOpen(false); setEditingTransaction(null); }}
+              className="absolute top-4 right-4 p-1 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="text-center space-y-2 border-b border-glass pb-4">
+              <Lock className="w-12 h-12 text-amber-500 mx-auto" />
+              <h2 className="text-lg font-bold text-white uppercase tracking-wider">Manager Override Required</h2>
+              <p className="text-xs text-gray-500">A manager must enter their 4-digit PIN to edit or delete this entry.</p>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div className="grid grid-cols-2 gap-2 bg-white/5 p-3 rounded-xl border border-glass">
+                <div>
+                  <span className="text-gray-500">Tire SKU:</span>
+                  <div className="font-bold font-mono mt-0.5 text-white">{editingTransaction.sku}</div>
+                </div>
+                <div>
+                  <span className="text-gray-500">Original Qty:</span>
+                  <div className="font-bold text-white mt-0.5">{editingTransaction.quantity} pcs</div>
+                </div>
+              </div>
+
+              {/* Input for new quantity */}
+              <div className="space-y-2">
+                <label className="block text-gray-400 font-semibold uppercase tracking-wider">Corrected Quantity</label>
+                <input
+                  type="number"
+                  placeholder="Enter correct stock count..."
+                  value={newQtyInput}
+                  onChange={e => setNewQtyInput(e.target.value)}
+                  className="w-full text-base font-bold p-2 rounded-lg bg-white/10 border border-glass text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+
+              {/* Input for manager pin */}
+              <div className="space-y-2">
+                <label className="block text-gray-400 font-semibold uppercase tracking-wider">4-Digit Manager PIN</label>
+                <input
+                  type="password"
+                  maxLength={4}
+                  placeholder="PIN"
+                  value={managerPinInput}
+                  onChange={e => setManagerPinInput(e.target.value.replace(/\D/g, ''))}
+                  className="w-full text-center text-xl font-bold tracking-[0.5em] p-2 rounded-lg bg-white/10 border border-glass text-slate-100 focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+
+              {managerPinError && (
+                <div className="p-3 bg-rose-500/10 border border-rose-500/25 text-rose-400 rounded-xl text-center font-medium">
+                  {managerPinError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={handleSaveTransactionDelete}
+                className="btn-secondary py-3 flex-1 text-sm bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border-rose-500/25"
+              >
+                Delete Log
+              </button>
+              <button
+                onClick={handleSaveTransactionEdit}
+                className="btn-primary py-3 flex-1 text-sm"
+              >
+                Apply Corrected Qty
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Worker Correction Flag Note */}
+      {flagModalOpen && flagTx && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="glass-panel w-full max-w-md space-y-6 relative border-amber-500/20 bg-slate-900/95">
+            <button 
+              onClick={() => { setFlagModalOpen(false); setFlagTx(null); }}
+              className="absolute top-4 right-4 p-1 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="text-center space-y-2 border-b border-glass pb-4">
+              <AlertTriangle className="w-12 h-12 text-amber-500 mx-auto" />
+              <h2 className="text-lg font-bold text-white uppercase tracking-wider">Flag Transaction for Correction</h2>
+              <p className="text-xs text-gray-500">Manager is not on duty? Add a review flag and a note explaining the mistake.</p>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div className="bg-white/5 p-3 rounded-xl border border-glass space-y-1">
+                <div><span className="text-gray-500">Tire:</span> <strong className="text-white">{flagTx.sku}</strong></div>
+                <div><span className="text-gray-500">Intake Count:</span> <strong className="text-white">{flagTx.quantity} pcs</strong></div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-gray-400 font-semibold uppercase tracking-wider">Explanation / Correction Note</label>
+                <textarea
+                  rows={4}
+                  placeholder="e.g. Mistakenly entered 20 pieces instead of 2. Needs Moncton stock adjusted by -18..."
+                  value={flagNoteInput}
+                  onChange={e => setFlagNoteInput(e.target.value)}
+                  className="w-full p-3 bg-white/10 border border-glass rounded-xl text-slate-100 placeholder-gray-500 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => { setFlagModalOpen(false); setFlagTx(null); }}
+                className="btn-secondary py-3 flex-1 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveFlagCorrection}
+                className="btn-primary py-3 flex-1 text-sm"
+              >
+                Submit Flag Request
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Premium Enterprise Footer (Anchored to the absolute bottom of the layout) */}
       <footer className="app-footer">
