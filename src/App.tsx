@@ -1259,16 +1259,16 @@ export default function App() {
         setPendingSyncCount(offlineStorage.getQueue().length);
       }
 
-      showTemporaryMessage('success', `Intake recorded: ${qty}x ${extractedSpecs.brand} ${extractedSpecs.model} added to ${locationName}!`);
-      // Reset state
+      showTemporaryMessage('success', `Intake recorded: ${qty}x ${extractedSpecs.brand} ${extractedSpecs.model} added to ${locationName}! Ready for next scan.`);
+      // Reset for next intake — stay on receive screen
       setReceivePhoto(null);
       setExtractedSpecs(null);
       setProductPhoto(null);
       setQuantityInput('');
+      setSkuExists(null);
       setWinterApproved(false);
       setWinterApprovedAiDetected(false);
       setReceiveScanError('');
-      setActiveTab('dashboard');
     } catch (e: any) {
       showTemporaryMessage('error', `Failed to save received stock: ${e.message}`);
     } finally {
@@ -1439,13 +1439,18 @@ export default function App() {
         totalQty += qty;
       }
 
-      showTemporaryMessage('success', `Bulk intake recorded: ${totalQty} items across ${savedCount} products added to ${locationName}!`);
-      // Reset state
+      showTemporaryMessage('success', `Bulk intake recorded: ${totalQty} items across ${savedCount} products added to ${locationName}! Ready for next scan.`);
+      // Reset for next intake — stay on receive screen
       setReceivePhoto(null);
       setBulkExtractedSpecs(null);
       setBulkQuantities({});
       setBulkProductPhotos({});
-      setActiveTab('dashboard');
+      setExtractedSpecs(null);
+      setQuantityInput('');
+      setSkuExists(null);
+      setWinterApproved(false);
+      setWinterApprovedAiDetected(false);
+      setReceiveScanError('');
     } catch (err: any) {
       showTemporaryMessage('error', `Failed to save bulk scan: ${err.message}`);
     } finally {
