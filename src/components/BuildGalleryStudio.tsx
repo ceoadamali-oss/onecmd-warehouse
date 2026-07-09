@@ -7,6 +7,7 @@ type BuildGalleryStudioProps = {
   activeLocation: string;
   employeeName: string;
   gpsCoords: { lat: number; lng: number } | null;
+  isSuperAdmin: boolean;
   onBack: () => void;
   showMessage: (type: 'success' | 'error', text: string) => void;
 };
@@ -15,6 +16,7 @@ export function BuildGalleryStudio({
   activeLocation,
   employeeName,
   gpsCoords,
+  isSuperAdmin,
   onBack,
   showMessage,
 }: BuildGalleryStudioProps) {
@@ -60,8 +62,8 @@ export function BuildGalleryStudio({
       showMessage('error', 'Vehicle make and wheel/tire details are required.');
       return;
     }
-    if (!gpsCoords) {
-      showMessage('error', 'GPS required — must be on premises to publish gallery builds.');
+    if (!gpsCoords && !isSuperAdmin) {
+      showMessage('error', 'Location verification is required to publish gallery builds.');
       return;
     }
 
@@ -84,8 +86,9 @@ export function BuildGalleryStudio({
           liftHeight: form.liftHeight,
           caption: form.caption,
           addedBy: employeeName,
-          lat: gpsCoords.lat,
-          lng: gpsCoords.lng,
+          lat: gpsCoords?.lat,
+          lng: gpsCoords?.lng,
+          isSuperAdmin,
         }),
       });
       const data = await res.json();

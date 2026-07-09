@@ -21,12 +21,12 @@ export default async function handler(req, res) {
   if (!supabase) return res.status(500).json({ error: 'Server database configuration missing.' });
 
   try {
-    const { sku, productType, imageData, lat, lng, employeeId } = req.body || {};
+    const { sku, productType, imageData, lat, lng, employeeId, isSuperAdmin } = req.body || {};
     if (!sku || !productType || !imageData) {
       return res.status(400).json({ error: 'sku, productType, and imageData are required.' });
     }
 
-    const geo = assertOnPremises(lat, lng);
+    const geo = assertOnPremises(lat, lng, { skip: !!isSuperAdmin });
     if (!geo.ok) return res.status(403).json({ error: geo.error });
 
     const skuKey = String(sku).toUpperCase().trim();

@@ -1,0 +1,123 @@
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
+const supabaseServiceKey = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || '';
+const supabase = (supabaseUrl && supabaseServiceKey) ? createClient(supabaseUrl, supabaseServiceKey) : null;
+
+// Helper to update stock level server-side
+async function serverUpdateStockLevel(supabaseClient, sku, type, locationId, diff) {
+  const activeLocalLocations = ['moncton', 'oromocto', 'saint-john', 'fredericton', 'otown'];
+  if (!locationId || !activeLocalLocations.includes(locationId)) {
+    console.log(`ℹ️ [API] Skipping stock update for non-local or empty location: ${locationId}`);
+    return null;
+  }
+
+  const table = type === 'tire' ? 'tires_catalog' : 'wheels_catalog';
+
+  const { data, error } = await supabaseClient
+    .from(table)
+    .select('location_counts, stock')
+    .eq('sku', sku)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Could not read stock for ${sku}: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error(`SKU ${sku} not found in catalog — stock was not updated.`);
+  }
+
+  const currentCounts = data.location_counts || {};
+  const newLocCount = Math.max(0, (currentCounts[locationId] || 0) + diff);
+  const newCounts = {
+    ...currentCounts,
+    [locationId]: newLocCount,
+  };
+  const newTotal = Object.values(newCounts).reduce((a, b) => a + (parseInt(String(b), 10) || 0), 0);
+
+  const { error: updateError } = await supabaseClient
+    .from(table)
+    .update({
+      location_counts: newCounts,
+      stock: newTotal,
+    })
+    .eq('sku', sku);
+
+  if (updateError) {
+    throw new Error(`Could not update stock for ${sku}: ${updateError.message}`);
+  }
+  
+  return { newCounts, newTotal };
+}
+
+export default async function handler(req, res) {
+  // CORS Headers
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+  );
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
+
+  if (!supabase) {
+    console.error('❌ Supabase credentials missing in serverless environment variables!');
+    return res.status(500).json({ error: 'Database configuration error. Please check your Vercel Environment Variables.' });
+  }
+
+  const { transactionId, receivedQuantity, verifiedBy } = req.body;
+  if (!transactionId || typeof receivedQuantity !== 'number' || receivedQuantity < 0 || !verifiedBy) {
+    return res.status(400).json({ error: 'Missing or invalid parameters (transactionId, receivedQuantity, verifiedBy)' });
+  }
+
+  try {
+    console.log(`⚡ [API Serverless] Verifying transfer transaction ${transactionId}...`);
+
+    // 1. Fetch transaction details
+    const { data: tx, error: fetchErr } = await supabase
+      .from('inventory_transactions')
+      .select('*')
+      .eq('id', transactionId)
+      .maybeSingle();
+
+    if (fetchErr) throw fetchErr;
+    if (!tx) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    // 2. Update transaction status
+    const { error: updateErr } = await supabase
+      .from('inventory_transactions')
+      .update({
+        status: 'completed',
+        received_quantity: receivedQuantity,
+        verified_at: new Date().toISOString(),
+        verified_by: verifiedBy
+      })
+      .eq('id', transactionId);
+
+    if (updateErr) throw updateErr;
+
+    // 3. Add stock to target location (verifiedBy should match to_location)
+    const targetLoc = tx.to_location || verifiedBy;
+    const stockUpdateResult = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, targetLoc, receivedQuantity);
+
+    return res.status(200).json({ 
+      success: true, 
+      verifiedLocation: targetLoc,
+      stockUpdate: stockUpdateResult 
+    });
+  } catch (error) {
+    console.error('❌ [API Serverless] Verify transfer failed:', error.message);
+    return res.status(500).json({ error: error.message });
+  }
+}

@@ -218,8 +218,6 @@ export default function App() {
   const [isOnSite, setIsOnSite] = useState(false);
   const [isOnPremises, setIsOnPremises] = useState(GEOFENCE_DEV_BYPASS);
   const [premisesChecking, setPremisesChecking] = useState(false);
-  const [nearestPremisesName, setNearestPremisesName] = useState('');
-  const [nearestPremisesDistanceM, setNearestPremisesDistanceM] = useState<number | null>(null);
   const [missingPhotoCount, setMissingPhotoCount] = useState(0);
   const [geofenceExitAt, setGeofenceExitAt] = useState<number | null>(null);
   const [workforceTick, setWorkforceTick] = useState(0);
@@ -399,11 +397,12 @@ export default function App() {
     }
   }, [configDb, currentUser]);
 
-  // Premises geofence — all logged-in users (entire app locks off-site)
+  // Premises geofence — staff only; super admin unrestricted
   useEffect(() => {
     if (!currentUser || !activeLocation) return;
-    if (GEOFENCE_DEV_BYPASS) {
+    if (GEOFENCE_DEV_BYPASS || isSuperAdminUser) {
       setIsOnPremises(true);
+      setGpsError(null);
       return;
     }
     checkGeofence();
@@ -412,7 +411,7 @@ export default function App() {
     return () => {
       if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
     };
-  }, [currentUser, activeLocation]);
+  }, [currentUser, activeLocation, isSuperAdminUser]);
 
   // Staff timecard geofence (active store only)
   useEffect(() => {
@@ -671,28 +670,24 @@ export default function App() {
     });
 
   const verifyPremisesAccess = async (): Promise<boolean> => {
-    if (GEOFENCE_DEV_BYPASS) return true;
+    if (GEOFENCE_DEV_BYPASS || loginMode === 'admin') return true;
     setPremisesChecking(true);
     try {
       const position = await requestGpsPosition();
       const { latitude, longitude } = position.coords;
       setGpsCoords({ lat: latitude, lng: longitude });
       const premises = getPremisesStatus(latitude, longitude);
-      setNearestPremisesName(premises.nearestStore.name);
-      setNearestPremisesDistanceM(Math.round(premises.distanceKm * 1000));
       setIsOnPremises(premises.isOnPremises);
       setGpsError(null);
       if (!premises.isOnPremises) {
-        setAuthError(
-          `You must be on ATK premises to use this app (nearest shop: ${Math.round(premises.distanceKm * 1000)}m away).`
-        );
+        setAuthError('Unable to sign in. Location verification is required.');
         return false;
       }
       return true;
     } catch (err: any) {
-      setGpsError(`GPS Error: ${err.message}`);
+      setGpsError(null);
       setIsOnPremises(false);
-      setAuthError('Location access is required. Enable GPS and try again.');
+      setAuthError('Unable to verify location. Enable GPS and try again.');
       return false;
     } finally {
       setPremisesChecking(false);
@@ -700,7 +695,7 @@ export default function App() {
   };
 
   const checkGeofence = () => {
-    if (GEOFENCE_DEV_BYPASS) {
+    if (GEOFENCE_DEV_BYPASS || isSuperAdminUser) {
       setIsOnPremises(true);
       setGpsError(null);
       return;
@@ -719,8 +714,6 @@ export default function App() {
 
         const premises = getPremisesStatus(latitude, longitude);
         setIsOnPremises(premises.isOnPremises);
-        setNearestPremisesName(premises.nearestStore.name);
-        setNearestPremisesDistanceM(Math.round(premises.distanceKm * 1000));
 
         const currentLoc = locations.find((l) => l.id === activeLocation);
         if (currentLoc) {
@@ -730,8 +723,8 @@ export default function App() {
         }
         setPremisesChecking(false);
       },
-      (err) => {
-        setGpsError(`GPS Error: ${err.message}`);
+      () => {
+        setGpsError(null);
         setIsOnPremises(false);
         setIsOnSite(false);
         setPremisesChecking(false);
@@ -750,7 +743,7 @@ export default function App() {
             ...tc,
             status: 'completed',
             clockOut: clockOutTime,
-            notes: 'Auto clock-out: left shop geofence and did not return within 15 minutes'
+            notes: 'Auto clock-out: location verification failed'
           };
         }
         return tc;
@@ -765,7 +758,7 @@ export default function App() {
       setIsClockedIn(false);
       setActiveShift(null);
       setGeofenceExitAt(null);
-      showTemporaryMessage('error', 'Auto clock-out: you left the shop and did not return within 15 minutes.');
+      showTemporaryMessage('error', 'Auto clock-out: your shift ended because location could not be verified.');
     } catch (e: any) {
       console.error('Failed auto clock-out:', e);
     }
@@ -784,7 +777,7 @@ export default function App() {
       return;
     }
 
-    const onPremises = await verifyPremisesAccess();
+    const onPremises = loginMode === 'admin' ? true : await verifyPremisesAccess();
     if (!onPremises) return;
 
     const selectedStoreObj = locations.find(l => l.id === activeLocation);
@@ -800,6 +793,7 @@ export default function App() {
         };
         setCurrentUser(mgrUser);
         setLocationName(storeName);
+        setIsOnPremises(true);
         localStorage.setItem('onecmd_active_location', activeLocation);
         localStorage.setItem('onecmd_active_location_name', storeName);
         localStorage.setItem('onecmd_current_user', JSON.stringify(mgrUser));
@@ -937,7 +931,7 @@ export default function App() {
 
             {opts?.fullPage ? (
               <p className="text-xs text-gray-400 mt-2 text-center">
-                100m GPS geofence · 15 min grace if staff leave the shop
+                Shifts may end automatically if location cannot be verified
               </p>
             ) : (
               <button
@@ -1876,17 +1870,13 @@ export default function App() {
             </div>
           )}
 
-          <button type="submit" className="w-full btn-primary font-semibold py-2.5 rounded-xl transition-colors" disabled={premisesChecking}>
-            {premisesChecking
-              ? 'Verifying on-premises GPS…'
+          <button type="submit" className="w-full btn-primary font-semibold py-2.5 rounded-xl transition-colors" disabled={premisesChecking && loginMode === 'technician'}>
+            {premisesChecking && loginMode === 'technician'
+              ? 'Verifying access…'
               : loginMode === 'admin'
               ? 'Enter Admin Dashboard'
               : 'Open Employee Portal'}
           </button>
-          <p className="text-center text-[11px] text-gray-500 mt-3">
-            <MapPin className="w-3 h-3 inline-block mr-1" />
-            Login requires GPS — you must be within 100m of an ATK shop. The app locks when you leave the premises.
-          </p>
         </form>
         
         <div className="text-center text-xs text-gray-500 mt-8">
@@ -1896,14 +1886,12 @@ export default function App() {
     );
   }
 
-  // RENDER: Main Application — locked off-premises
-  if (!GEOFENCE_DEV_BYPASS && !isOnPremises) {
+  // RENDER: Main Application — locked off-premises (staff only)
+  if (!GEOFENCE_DEV_BYPASS && !isSuperAdminUser && !isOnPremises) {
     return (
       <div className="flex-1 flex flex-col min-h-[100dvh] premises-lock-screen">
         <PremisesLockOverlay
           gpsError={gpsError}
-          nearestStoreName={nearestPremisesName || 'Atlantic Tire King'}
-          distanceM={nearestPremisesDistanceM}
           checking={premisesChecking}
           onRetryGps={checkGeofence}
           onLogout={handleLogout}
@@ -4310,28 +4298,13 @@ export default function App() {
             <div className="geofence-status">
               <div className="flex items-center gap-2 text-sm font-semibold text-gray-400">
                 <MapPin className="w-4 h-4 text-primary" />
-                <span>GPS Geofence (100m)</span>
+                <span>Location Status</span>
               </div>
               {isOnSite ? (
-                <span className="badge badge-green text-xs">On Site</span>
+                <span className="badge badge-green text-xs">Verified</span>
               ) : (
-                <span className="badge badge-rose text-xs">Out of Bounds</span>
+                <span className="badge badge-rose text-xs">Unavailable</span>
               )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 text-xs mb-3">
-              <div>
-                <span className="text-gray-500 block mb-1">GPS Coordinates</span>
-                <span className="geofence-status__coords">
-                  {gpsCoords ? `${gpsCoords.lat.toFixed(5)}, ${gpsCoords.lng.toFixed(5)}` : 'Detecting...'}
-                </span>
-              </div>
-              <div>
-                <span className="text-gray-500 block mb-1">Distance to Shop</span>
-                <span className="font-semibold text-slate-800">
-                  {distanceToShop !== null ? `${Math.round(distanceToShop * 1000)} m` : 'Calculating...'}
-                </span>
-              </div>
             </div>
 
             {gpsError && (
@@ -4345,9 +4318,9 @@ export default function App() {
               <div className="scan-result-alert scan-result-alert--error text-xs mt-3">
                 <AlertTriangle className="w-4 h-4 flex-shrink-0" />
                 <span>
-                  You left the shop. Return within{' '}
+                  Return within{' '}
                   {Math.max(0, Math.ceil((GEOFENCE_GRACE_MS - (Date.now() - geofenceExitAt)) / 60000))} min
-                  {' '}or you will be auto clocked out at your leave time.
+                  {' '}or your shift may end automatically.
                 </span>
               </div>
             )}
@@ -4365,7 +4338,7 @@ export default function App() {
                 onClick={async () => {
                   if (!configDb || !currentUser.technicianId) return;
                   if (!isOnSite) {
-                    showTemporaryMessage('error', 'Cannot clock in: you must be within 100m of the shop.');
+                    showTemporaryMessage('error', 'Cannot clock in: location verification required.');
                     return;
                   }
                   const newShift = {
@@ -4393,7 +4366,7 @@ export default function App() {
                 className="btn-clock-in"
               >
                 <Clock className="w-5 h-5" />
-                {isOnSite ? 'Clock In Now' : 'Must Be On-Site to Clock In'}
+                {isOnSite ? 'Clock In Now' : 'Location Required to Clock In'}
               </button>
             ) : (
               <button
@@ -4930,6 +4903,7 @@ export default function App() {
           activeLocation={activeLocation!}
           employeeName={currentUser?.name || 'Staff'}
           gpsCoords={gpsCoords}
+          isSuperAdmin={isSuperAdminUser}
           onBack={() => setActiveTab('dashboard')}
           onCountChange={setMissingPhotoCount}
           showMessage={showTemporaryMessage}
@@ -4941,6 +4915,7 @@ export default function App() {
           activeLocation={activeLocation!}
           employeeName={currentUser?.name || 'Staff'}
           gpsCoords={gpsCoords}
+          isSuperAdmin={isSuperAdminUser}
           onBack={() => setActiveTab('dashboard')}
           showMessage={showTemporaryMessage}
         />
@@ -5081,7 +5056,7 @@ export default function App() {
                       <p>Your employee account has been created on the warehouse dashboard.</p>
                       <p>To access your account, select your location and enter your 4-digit PIN:</p>
                       <h1 style="color: #6d28d9; letter-spacing: 5px;">${generatedPin}</h1>
-                      <p>Please keep this PIN secure. You can clock in and out on site using this PIN.</p>
+                      <p>Please keep this PIN secure. Use it to clock in and out from this app.</p>
                     `;
 
                     const mailResponse = await fetch('/api/send-email', {

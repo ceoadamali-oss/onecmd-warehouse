@@ -1,5 +1,3 @@
-import { supabase } from './supabaseClient';
-
 export interface PendingTransaction {
   id: string;
   sku: string;
@@ -65,35 +63,22 @@ export const offlineStorage = {
 
     for (const tx of queue) {
       try {
-        // 1. Upload transaction to database
-        const { error: txError } = await supabase.from('inventory_transactions').insert({
-          id: tx.id,
-          sku: tx.sku,
-          product_type: tx.product_type,
-          transaction_type: tx.transaction_type,
-          quantity: tx.quantity,
-          from_location: tx.from_location,
-          to_location: tx.to_location,
-          status: tx.status,
-          supplier_container: tx.supplier_container,
-          employee_id: tx.employee_id,
-          notes: tx.notes || 'Submitted offline',
-          created_at: tx.created_at
+        const response = await fetch('/api/sync-transaction', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(tx)
         });
 
-        if (txError) throw txError;
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Sync API returned status ${response.status}: ${errText}`);
+        }
 
-        // 2. Update actual inventory catalog stock
-        if (tx.transaction_type === 'receive' && tx.status === 'completed') {
-          // Adjust stock directly for receiving (we will do this in the app handler)
-          await updateStockLevel(tx.sku, tx.product_type, tx.to_location!, tx.quantity);
-        } else if (tx.transaction_type === 'transfer' && tx.status === 'completed') {
-          // Subtract from source, add to dest (for completed direct transfers)
-          await updateStockLevel(tx.sku, tx.product_type, tx.from_location!, -tx.quantity);
-          await updateStockLevel(tx.sku, tx.product_type, tx.to_location!, tx.quantity);
-        } else if (tx.transaction_type === 'transfer' && tx.status === 'pending') {
-          // In-transit transfer handshake: subtract from source, but do NOT add to dest yet
-          await updateStockLevel(tx.sku, tx.product_type, tx.from_location!, -tx.quantity);
+        const resData = await response.json();
+        if (!resData.success) {
+          throw new Error(resData.error || 'Unknown API sync error');
         }
 
         // Successfully synced, dequeue it
@@ -108,41 +93,3 @@ export const offlineStorage = {
     return { success: successCount, failed: failedCount };
   }
 };
-
-// Helper function to update catalog stock values inside Supabase jsonb
-export async function updateStockLevel(sku: string, type: 'tire' | 'wheel', locationId: string, diff: number) {
-  const table = type === 'tire' ? 'tires_catalog' : 'wheels_catalog';
-
-  const { data, error } = await supabase
-    .from(table)
-    .select('location_counts, stock')
-    .eq('sku', sku)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(`Could not read stock for ${sku}: ${error.message}`);
-  }
-  if (!data) {
-    throw new Error(`SKU ${sku} not found in catalog — stock was not updated.`);
-  }
-
-  const currentCounts = data.location_counts || {};
-  const newLocCount = Math.max(0, (currentCounts[locationId] || 0) + diff);
-  const newCounts = {
-    ...currentCounts,
-    [locationId]: newLocCount,
-  };
-  const newTotal = Object.values(newCounts).reduce((a: number, b: unknown) => a + (parseInt(String(b), 10) || 0), 0);
-
-  const { error: updateError } = await supabase
-    .from(table)
-    .update({
-      location_counts: newCounts,
-      stock: newTotal,
-    })
-    .eq('sku', sku);
-
-  if (updateError) {
-    throw new Error(`Could not update stock for ${sku}: ${updateError.message}`);
-  }
-}

@@ -37,11 +37,12 @@ export default async function handler(req, res) {
       addedBy,
       lat,
       lng,
+      isSuperAdmin,
     } = req.body || {};
 
     if (!imageData) return res.status(400).json({ error: 'Hero photo is required.' });
 
-    const geo = assertOnPremises(lat, lng);
+    const geo = assertOnPremises(lat, lng, { skip: !!isSuperAdmin });
     if (!geo.ok) return res.status(403).json({ error: geo.error });
 
     await supabase.storage.createBucket('gallery-builds', { public: true }).catch(() => {});

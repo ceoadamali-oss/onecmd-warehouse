@@ -20,11 +20,15 @@ function distanceKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export function assertOnPremises(lat, lng) {
+export function assertOnPremises(lat, lng, { skip = false } = {}) {
+  if (skip) {
+    return { ok: true, storeId: 'moncton', skipped: true };
+  }
+
   const latitude = parseFloat(lat);
   const longitude = parseFloat(lng);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-    return { ok: false, error: 'GPS coordinates are required for this action.' };
+    return { ok: false, error: 'Location verification is required for this action.' };
   }
 
   let nearest = STORES[0];
@@ -38,11 +42,8 @@ export function assertOnPremises(lat, lng) {
   }
 
   if (nearestDist > RADIUS_KM) {
-    return {
-      ok: false,
-      error: `Action blocked: you must be on ATK premises (nearest store ${Math.round(nearestDist * 1000)}m away).`,
-    };
+    return { ok: false, error: 'This action is only available at authorized shop locations.' };
   }
 
-  return { ok: true, storeId: nearest.id, distanceM: Math.round(nearestDist * 1000) };
+  return { ok: true, storeId: nearest.id };
 }

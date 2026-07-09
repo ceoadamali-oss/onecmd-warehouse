@@ -20,6 +20,7 @@ type ProductPhotoStudioProps = {
   activeLocation: string;
   employeeName: string;
   gpsCoords: { lat: number; lng: number } | null;
+  isSuperAdmin: boolean;
   onBack: () => void;
   onCountChange: (count: number) => void;
   showMessage: (type: 'success' | 'error', text: string) => void;
@@ -29,6 +30,7 @@ export function ProductPhotoStudio({
   activeLocation,
   employeeName,
   gpsCoords,
+  isSuperAdmin,
   onBack,
   onCountChange,
   showMessage,
@@ -125,8 +127,8 @@ export function ProductPhotoStudio({
 
   const handleSave = async () => {
     if (!selected || !processedPhoto) return;
-    if (!gpsCoords) {
-      showMessage('error', 'GPS required — must be on premises to upload catalog photos.');
+    if (!gpsCoords && !isSuperAdmin) {
+      showMessage('error', 'Location verification is required to upload catalog photos.');
       return;
     }
     setSaving(true);
@@ -138,9 +140,10 @@ export function ProductPhotoStudio({
           sku: selected.sku,
           productType: selected.productType,
           imageData: processedPhoto,
-          lat: gpsCoords.lat,
-          lng: gpsCoords.lng,
+          lat: gpsCoords?.lat,
+          lng: gpsCoords?.lng,
           employeeId: employeeName,
+          isSuperAdmin,
         }),
       });
       const data = await res.json();
