@@ -1235,29 +1235,24 @@ export default function App() {
             size: extractedSpecs.size,
             name: catalogName,
             price: isWheel ? 180 : 120,
-            stock: 0,
+            stock: qty,
             image: publicImageUrl,
-            location_counts: {}
+            location_counts: { [activeLocation!]: qty },
           };
           if (!isWheel) {
             insertPayload.type = extractedSpecs.season || 'All-Season';
-            insertPayload.winter_approved = winterApproved;
           }
 
           const { error: upsertErr } = await supabase.from(table).upsert(insertPayload);
           if (upsertErr) throw upsertErr;
-        } else if (!isWheel && winterApproved) {
-          const { error: winterErr } = await supabase
-            .from('tires_catalog')
-            .update({ winter_approved: true })
-            .eq('sku', generatedSku);
-          if (winterErr) throw winterErr;
         }
 
         const { error: insertErr } = await supabase.from('inventory_transactions').insert(txData);
         if (insertErr) throw insertErr;
 
-        await updateStockLevel(generatedSku, isWheel ? 'wheel' : 'tire', activeLocation!, qty);
+        if (itemExists) {
+          await updateStockLevel(generatedSku, isWheel ? 'wheel' : 'tire', activeLocation!, qty);
+        }
       } else {
         // Cache offline
         offlineStorage.enqueue(txData);
@@ -1417,29 +1412,24 @@ export default function App() {
               size: item.size,
               name: catalogName,
               price: isWheel ? 180 : 120,
-              stock: 0,
+              stock: qty,
               image: publicImageUrl,
-              location_counts: {}
+              location_counts: { [activeLocation!]: qty },
             };
             if (!isWheel) {
               insertPayload.type = item.season || 'All-Season';
-              insertPayload.winter_approved = Boolean(item.winter_approved || item.has_3pmsf);
             }
 
             const { error: upsertErr } = await supabase.from(table).upsert(insertPayload);
             if (upsertErr) throw upsertErr;
-          } else if (!isWheel && (item.winter_approved || item.has_3pmsf)) {
-            const { error: winterErr } = await supabase
-              .from('tires_catalog')
-              .update({ winter_approved: true })
-              .eq('sku', generatedSku);
-            if (winterErr) throw winterErr;
           }
 
           const { error: insertErr } = await supabase.from('inventory_transactions').insert(txData);
           if (insertErr) throw insertErr;
 
-          await updateStockLevel(generatedSku, isWheel ? 'wheel' : 'tire', activeLocation!, qty);
+          if (itemExists) {
+            await updateStockLevel(generatedSku, isWheel ? 'wheel' : 'tire', activeLocation!, qty);
+          }
         } else {
           offlineStorage.enqueue(txData);
           setPendingSyncCount(offlineStorage.getQueue().length);

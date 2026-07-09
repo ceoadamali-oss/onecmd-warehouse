@@ -112,33 +112,37 @@ export const offlineStorage = {
 // Helper function to update catalog stock values inside Supabase jsonb
 export async function updateStockLevel(sku: string, type: 'tire' | 'wheel', locationId: string, diff: number) {
   const table = type === 'tire' ? 'tires_catalog' : 'wheels_catalog';
-  
-  // 1. Fetch current item location counts
+
   const { data, error } = await supabase
     .from(table)
     .select('location_counts, stock')
     .eq('sku', sku)
-    .single();
+    .maybeSingle();
 
-  if (error || !data) return;
+  if (error) {
+    throw new Error(`Could not read stock for ${sku}: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error(`SKU ${sku} not found in catalog — stock was not updated.`);
+  }
 
   const currentCounts = data.location_counts || {};
-
   const newLocCount = Math.max(0, (currentCounts[locationId] || 0) + diff);
   const newCounts = {
     ...currentCounts,
-    [locationId]: newLocCount
+    [locationId]: newLocCount,
   };
+  const newTotal = Object.values(newCounts).reduce((a: number, b: unknown) => a + (parseInt(String(b), 10) || 0), 0);
 
-  // Calculate new total stock by summing up all locations
-  const newTotal = Object.values(newCounts).reduce((a: number, b: any) => a + (parseInt(b) || 0), 0);
-
-  // 2. Save new values
-  await supabase
+  const { error: updateError } = await supabase
     .from(table)
     .update({
       location_counts: newCounts,
-      stock: newTotal
+      stock: newTotal,
     })
     .eq('sku', sku);
+
+  if (updateError) {
+    throw new Error(`Could not update stock for ${sku}: ${updateError.message}`);
+  }
 }
