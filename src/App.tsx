@@ -4181,33 +4181,64 @@ export default function App() {
                   <label className="block text-gray-400 font-semibold uppercase tracking-wider text-xs">Specify Working Days Quota</label>
                   <div className="space-y-2.5">
                     {configDb?.technicians.map((tech: any) => (
-                      <div key={tech.id} className="flex justify-between items-center p-3 bg-white/5 border border-glass rounded-xl text-xs">
+                      <div key={tech.id} className="flex justify-between items-center p-3 bg-white/5 border border-glass rounded-xl text-xs gap-4">
                         <div>
                           <div className="font-semibold text-slate-200">{tech.name}</div>
                           <div className="text-[10px] text-gray-500">Home: {locations.find(l => l.id === tech.locationId)?.name}</div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const curr = rosterDaysQuotas[tech.id] || 0;
-                              setRosterDaysQuotas({ ...rosterDaysQuotas, [tech.id]: Math.max(0, curr - 1) });
-                            }}
-                            className="w-6 h-6 rounded bg-slate-800 border border-glass flex items-center justify-center font-bold text-white hover:bg-slate-700 transition-colors"
-                          >
-                            -
-                          </button>
-                          <span className="w-8 text-center font-bold text-slate-200">{rosterDaysQuotas[tech.id] || 0} days</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const curr = rosterDaysQuotas[tech.id] || 0;
-                              setRosterDaysQuotas({ ...rosterDaysQuotas, [tech.id]: Math.min(6, curr + 1) });
-                            }}
-                            className="w-6 h-6 rounded bg-slate-800 border border-glass flex items-center justify-center font-bold text-white hover:bg-slate-700 transition-colors"
-                          >
-                            +
-                          </button>
+                        <div className="flex items-center gap-4">
+                          <div className="space-y-1">
+                            <span className="text-[9px] text-gray-500 uppercase block font-semibold">Pref Day</span>
+                            <select
+                              value={tech.preferredDay || 'None'}
+                              onChange={async (e) => {
+                                if (!configDb) return;
+                                tech.preferredDay = e.target.value;
+                                const updated = {
+                                  ...configDb,
+                                  technicians: configDb.technicians.map(t => t.id === tech.id ? { ...t, preferredDay: e.target.value } : t)
+                                };
+                                await saveConfig(updated);
+                                showTemporaryMessage('success', `Updated preferred day for ${tech.name} to ${e.target.value}`);
+                              }}
+                              className="bg-slate-900 border border-slate-700 text-white rounded-lg py-1 px-2 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500"
+                            >
+                              <option value="None">None</option>
+                              <option value="Monday">Mon</option>
+                              <option value="Tuesday">Tue</option>
+                              <option value="Wednesday">Wed</option>
+                              <option value="Thursday">Thu</option>
+                              <option value="Friday">Fri</option>
+                              <option value="Saturday">Sat</option>
+                            </select>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[9px] text-gray-500 uppercase block font-semibold text-center">Quota</span>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const curr = rosterDaysQuotas[tech.id] || 0;
+                                  setRosterDaysQuotas({ ...rosterDaysQuotas, [tech.id]: Math.max(0, curr - 1) });
+                                }}
+                                className="w-6 h-6 rounded bg-slate-800 border border-glass flex items-center justify-center font-bold text-white hover:bg-slate-700 transition-colors"
+                              >
+                                -
+                              </button>
+                              <span className="w-8 text-center font-bold text-slate-200">{rosterDaysQuotas[tech.id] || 0} days</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const curr = rosterDaysQuotas[tech.id] || 0;
+                                  setRosterDaysQuotas({ ...rosterDaysQuotas, [tech.id]: Math.min(6, curr + 1) });
+                                }}
+                                className="w-6 h-6 rounded bg-slate-800 border border-glass flex items-center justify-center font-bold text-white hover:bg-slate-700 transition-colors"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
                         </div>
                       </div>
                     ))}
