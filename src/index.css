@@ -607,7 +607,7 @@ select option {
 }
 
 .receive-specs-card {
-  max-height: min(46vh, 420px);
+  max-height: min(65vh, 600px);
   overflow-y: auto;
 }
 

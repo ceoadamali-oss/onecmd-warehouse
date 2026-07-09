@@ -410,6 +410,28 @@ export default function App() {
     }
   }, [activeLocation, activeTab]);
 
+  // Dynamic SKU check as user updates brand, size, or model manually
+  useEffect(() => {
+    if (!extractedSpecs || !extractedSpecs.brand || !extractedSpecs.size) {
+      setSkuExists(null);
+      return;
+    }
+    const checkSku = async () => {
+      try {
+        const generatedSku = formatSku(extractedSpecs.brand, extractedSpecs.size, extractedSpecs.model || '');
+        const { data } = await supabase
+          .from('tires_catalog')
+          .select('sku')
+          .eq('sku', generatedSku)
+          .maybeSingle();
+        setSkuExists(!!data);
+      } catch (e) {
+        console.error('Error checking SKU dynamically:', e);
+      }
+    };
+    checkSku();
+  }, [extractedSpecs?.brand, extractedSpecs?.size, extractedSpecs?.model]);
+
   const fetchRecentTransactions = async () => {
     if (!activeLocation) return;
     try {
@@ -837,17 +859,21 @@ export default function App() {
       setWinterApproved(inferredWinter);
       setWinterApprovedAiDetected(Boolean(parsed.has_3pmsf || parsed.winter_approved));
 
-      if (!parsed.brand || !parsed.size) {
+      if (!parsed.size) {
         setReceiveScanError(
           scanMode === 'sidewall'
-            ? 'Could not read sidewall brand or size. Retake in better light with tire markings clearly visible and in frame.'
-            : 'Could not read brand or size. Retake in better light with the full sticker in frame.'
+            ? 'Could not read sidewall size spec. Retake in better light with tire markings clearly visible and in frame.'
+            : 'Could not read size. Retake in better light with the full sticker in frame.'
         );
         return;
       }
+
+      if (!parsed.brand || parsed.brand.toLowerCase() === 'n/a') {
+        parsed.brand = '';
+      }
       
       // Query if SKU exists in master catalog
-      if (isOnline && parsed.size) {
+      if (isOnline && parsed.brand && parsed.size) {
         const generatedSku = formatSku(parsed.brand, parsed.size, parsed.model || '');
         const { data } = await supabase
           .from('tires_catalog')
@@ -855,6 +881,8 @@ export default function App() {
           .eq('sku', generatedSku)
           .maybeSingle();
         setSkuExists(!!data);
+      } else {
+        setSkuExists(false);
       }
     } catch (err: any) {
       setReceiveScanError(err.message || 'AI label extraction failed. Hold steady and retake the photo.');
@@ -867,6 +895,10 @@ export default function App() {
   // Save parsed intake inventory
   const handleSaveReceive = async () => {
     if (!extractedSpecs || !quantityInput) return;
+    if (!extractedSpecs.brand || !extractedSpecs.brand.trim()) {
+      showTemporaryMessage('error', 'Brand name is required. Please enter the brand name manually.');
+      return;
+    }
     const qty = parseInt(quantityInput);
     if (isNaN(qty) || qty <= 0) {
       showTemporaryMessage('error', 'Please enter a valid quantity.');
@@ -1041,6 +1073,11 @@ export default function App() {
 
   const handleSaveBulkReceive = async () => {
     if (!bulkExtractedSpecs || bulkExtractedSpecs.length === 0) return;
+    const missingBrandIdx = bulkExtractedSpecs.findIndex(item => !item.brand || !item.brand.trim());
+    if (missingBrandIdx !== -1) {
+      showTemporaryMessage('error', `Product #${missingBrandIdx + 1} is missing a Brand name. Please enter it manually.`);
+      return;
+    }
     setSavingBulkReceive(true);
     try {
       let savedCount = 0;
@@ -2300,8 +2337,8 @@ export default function App() {
                 onCapture={processReceiveSticker}
               />
             ) : (
-              <div className="space-y-6 flex-1 flex flex-col">
-                <div className="relative rounded-2xl overflow-hidden border border-glass max-h-[200px]">
+              <div className="space-y-3.5 flex-1 flex flex-col">
+                <div className="relative rounded-2xl overflow-hidden border border-glass max-h-[90px]">
                   <img src={receivePhoto} alt="Tire Label Preview" className="w-full h-full object-cover" />
                   <button 
                     onClick={() => { 
@@ -2314,7 +2351,7 @@ export default function App() {
                       setReceiveScanError(''); 
                       setWinterApproved(false); 
                     }} 
-                    className="absolute top-2 right-2 btn-secondary py-2 px-3 text-xs"
+                    className="absolute top-1.5 right-1.5 btn-secondary py-1.5 px-2.5 text-xs"
                   >
                     Retake
                   </button>
@@ -2430,18 +2467,29 @@ export default function App() {
                       {extractedSpecs.product_type === 'wheel' ? (
                         <>
                           <div className="col-span-2">
-                            <span className="spec-grid__label">Brand</span>
+                            <span className="spec-grid__label flex items-center justify-between">
+                              <span>Brand</span>
+                              {!extractedSpecs.brand?.trim() && (
+                                <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
+                              )}
+                            </span>
                             <input
                               type="text"
+                              placeholder="Enter brand name..."
                               value={extractedSpecs.brand || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, brand: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className={`bg-glass-dark border rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 w-full mt-1.5 transition-all ${
+                                !extractedSpecs.brand?.trim() 
+                                  ? 'border-amber-500/50 focus:border-amber-500 focus:ring-amber-500/20' 
+                                  : 'border-glass focus:border-primary focus:ring-primary/20'
+                              }`}
                             />
                           </div>
                           <div className="col-span-2">
                             <span className="spec-grid__label">Model</span>
                             <input
                               type="text"
+                              placeholder="Enter model name..."
                               value={extractedSpecs.model || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, model: e.target.value })}
                               className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
@@ -2451,6 +2499,7 @@ export default function App() {
                             <span className="spec-grid__label">Finish / Color</span>
                             <input
                               type="text"
+                              placeholder="Enter finish/color..."
                               value={extractedSpecs.finish || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, finish: e.target.value })}
                               className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
@@ -2460,15 +2509,17 @@ export default function App() {
                             <span className="spec-grid__label">Part Number</span>
                             <input
                               type="text"
+                              placeholder="Enter part number..."
                               value={extractedSpecs.part_number || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, part_number: e.target.value })}
                               className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Size</span>
                             <input
                               type="text"
+                              placeholder="e.g. 18x8.5"
                               value={extractedSpecs.size || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, size: e.target.value })}
                               className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
@@ -2492,7 +2543,7 @@ export default function App() {
                               className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Center Bore (CB)</span>
                             <input
                               type="text"
@@ -2505,27 +2556,39 @@ export default function App() {
                       ) : (
                         <>
                           <div className="col-span-2">
-                            <span className="spec-grid__label">Brand</span>
+                            <span className="spec-grid__label flex items-center justify-between">
+                              <span>Brand</span>
+                              {!extractedSpecs.brand?.trim() && (
+                                <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
+                              )}
+                            </span>
                             <input
                               type="text"
+                              placeholder="Enter brand name..."
                               value={extractedSpecs.brand || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, brand: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className={`bg-glass-dark border rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 w-full mt-1.5 transition-all ${
+                                !extractedSpecs.brand?.trim() 
+                                  ? 'border-amber-500/50 focus:border-amber-500 focus:ring-amber-500/20' 
+                                  : 'border-glass focus:border-primary focus:ring-primary/20'
+                              }`}
                             />
                           </div>
                           <div className="col-span-2">
                             <span className="spec-grid__label">Model</span>
                             <input
                               type="text"
+                              placeholder="Enter model name..."
                               value={extractedSpecs.model || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, model: e.target.value })}
                               className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Size</span>
                             <input
                               type="text"
+                              placeholder="e.g. 225/45R17"
                               value={extractedSpecs.size || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, size: e.target.value })}
                               className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
@@ -2636,11 +2699,20 @@ export default function App() {
 
                     <button 
                       onClick={handleSaveReceive}
-                      disabled={savingReceive || !quantityInput}
-                      className="w-full btn-primary py-4"
+                      disabled={savingReceive || !quantityInput || !extractedSpecs?.brand?.trim()}
+                      className={`w-full btn-primary py-4 transition-all ${
+                        (!extractedSpecs?.brand?.trim() || !quantityInput)
+                          ? 'bg-slate-800 text-gray-500 border border-slate-700 cursor-not-allowed hover:bg-slate-800'
+                          : 'bg-primary text-black hover:bg-primary/95'
+                      }`}
                     >
                       {savingReceive ? <RotateCw className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
-                      {skuExists ? 'Confirm & Add to Stock' : 'Create New Product & Initialize Stock'}
+                      {!extractedSpecs?.brand?.trim() 
+                        ? 'Enter Brand Name to Continue'
+                        : skuExists 
+                        ? 'Confirm & Add to Stock' 
+                        : 'Create New Product & Initialize Stock'
+                      }
                     </button>
                     </div>
                   </div>
@@ -2786,22 +2858,33 @@ export default function App() {
                             {item.product_type === 'wheel' ? (
                               <>
                                 <div className="col-span-2">
-                                  <span className="spec-grid__label">Brand</span>
+                                  <span className="spec-grid__label flex items-center justify-between">
+                                    <span>Brand</span>
+                                    {!item.brand?.trim() && (
+                                      <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
+                                    )}
+                                  </span>
                                   <input
                                     type="text"
+                                    placeholder="Enter brand name..."
                                     value={item.brand || ''}
                                     onChange={(e) => {
                                       const updated = [...bulkExtractedSpecs];
                                       updated[idx] = { ...updated[idx], brand: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className={`bg-glass-dark border rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 w-full mt-1.5 transition-all ${
+                                      !item.brand?.trim() 
+                                        ? 'border-amber-500/50 focus:border-amber-500 focus:ring-amber-500/20' 
+                                        : 'border-glass focus:border-primary focus:ring-primary/20'
+                                    }`}
                                   />
                                 </div>
                                 <div className="col-span-2">
                                   <span className="spec-grid__label">Model</span>
                                   <input
                                     type="text"
+                                    placeholder="Enter model name..."
                                     value={item.model || ''}
                                     onChange={(e) => {
                                       const updated = [...bulkExtractedSpecs];
@@ -2815,6 +2898,7 @@ export default function App() {
                                   <span className="spec-grid__label">Finish / Color</span>
                                   <input
                                     type="text"
+                                    placeholder="Enter finish/color..."
                                     value={item.finish || ''}
                                     onChange={(e) => {
                                       const updated = [...bulkExtractedSpecs];
@@ -2828,6 +2912,7 @@ export default function App() {
                                   <span className="spec-grid__label">Part Number</span>
                                   <input
                                     type="text"
+                                    placeholder="Enter part number..."
                                     value={item.part_number || ''}
                                     onChange={(e) => {
                                       const updated = [...bulkExtractedSpecs];
@@ -2837,10 +2922,11 @@ export default function App() {
                                     className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                                   />
                                 </div>
-                                <div>
+                                <div className="col-span-2">
                                   <span className="spec-grid__label">Size</span>
                                   <input
                                     type="text"
+                                    placeholder="e.g. 18x8.5"
                                     value={item.size || ''}
                                     onChange={(e) => {
                                       const updated = [...bulkExtractedSpecs];
@@ -2876,7 +2962,7 @@ export default function App() {
                                     className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                                   />
                                 </div>
-                                <div>
+                                <div className="col-span-2">
                                   <span className="spec-grid__label">Center Bore (CB)</span>
                                   <input
                                     type="text"
@@ -2893,22 +2979,33 @@ export default function App() {
                             ) : (
                               <>
                                 <div className="col-span-2">
-                                  <span className="spec-grid__label">Brand</span>
+                                  <span className="spec-grid__label flex items-center justify-between">
+                                    <span>Brand</span>
+                                    {!item.brand?.trim() && (
+                                      <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
+                                    )}
+                                  </span>
                                   <input
                                     type="text"
+                                    placeholder="Enter brand name..."
                                     value={item.brand || ''}
                                     onChange={(e) => {
                                       const updated = [...bulkExtractedSpecs];
                                       updated[idx] = { ...updated[idx], brand: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className={`bg-glass-dark border rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 w-full mt-1.5 transition-all ${
+                                      !item.brand?.trim() 
+                                        ? 'border-amber-500/50 focus:border-amber-500 focus:ring-amber-500/20' 
+                                        : 'border-glass focus:border-primary focus:ring-primary/20'
+                                    }`}
                                   />
                                 </div>
                                 <div className="col-span-2">
                                   <span className="spec-grid__label">Model</span>
                                   <input
                                     type="text"
+                                    placeholder="Enter model name..."
                                     value={item.model || ''}
                                     onChange={(e) => {
                                       const updated = [...bulkExtractedSpecs];
@@ -2918,10 +3015,11 @@ export default function App() {
                                     className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                                   />
                                 </div>
-                                <div>
+                                <div className="col-span-2">
                                   <span className="spec-grid__label">Size</span>
                                   <input
                                     type="text"
+                                    placeholder="e.g. 225/45R17"
                                     value={item.size || ''}
                                     onChange={(e) => {
                                       const updated = [...bulkExtractedSpecs];
@@ -3065,11 +3163,18 @@ export default function App() {
 
                     <button
                       onClick={handleSaveBulkReceive}
-                      disabled={savingBulkReceive || bulkExtractedSpecs.length === 0}
-                      className="w-full btn-primary py-4 mt-4"
+                      disabled={savingBulkReceive || bulkExtractedSpecs.length === 0 || bulkExtractedSpecs.some(item => !item.brand || !item.brand.trim())}
+                      className={`w-full btn-primary py-4 mt-4 transition-all ${
+                        (bulkExtractedSpecs.some(item => !item.brand || !item.brand.trim()) || bulkExtractedSpecs.length === 0)
+                          ? 'bg-slate-800 text-gray-500 border border-slate-700 cursor-not-allowed hover:bg-slate-800'
+                          : 'bg-primary text-black hover:bg-primary/95'
+                      }`}
                     >
                       {savingBulkReceive ? <RotateCw className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
-                      Save All Bulk Intake ({Object.values(bulkQuantities).reduce((a, b) => a + b, 0)} Items)
+                      {bulkExtractedSpecs.some(item => !item.brand || !item.brand.trim())
+                        ? 'Enter Brand Name for all items to Continue'
+                        : `Save All Bulk Intake (${Object.values(bulkQuantities).reduce((a, b) => a + b, 0)} Items)`
+                      }
                     </button>
                   </div>
                 )}
