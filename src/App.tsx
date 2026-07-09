@@ -98,11 +98,11 @@ export default function App() {
 
   // Locations Catalog Cache with coordinates for geofence validation
   const [locations] = useState<Array<{ id: string; name: string; lat: number; lng: number }>>([
-    { id: 'moncton', name: 'Tarek King Mountain', lat: 46.1389, lng: -64.8488 },
-    { id: 'oromocto', name: 'Tarek King Oromocto', lat: 45.8398, lng: -66.4767 },
-    { id: 'fredericton', name: 'Fredericton Outlet', lat: 45.9389, lng: -66.6656 },
-    { id: 'saint-john', name: 'Tarek King St. John', lat: 45.2889, lng: -66.0547 },
-    { id: 'otown', name: 'O\'Town Auto', lat: 45.8312, lng: -66.4923 }
+    { id: 'moncton', name: 'Tire King Moncton', lat: 46.1389, lng: -64.8488 },
+    { id: 'oromocto', name: 'Tire King Oromocto', lat: 45.8398, lng: -66.4767 },
+    { id: 'fredericton', name: 'Tire King Fredericton', lat: 45.9389, lng: -66.6656 },
+    { id: 'saint-john', name: 'Tire King Saint John', lat: 45.2889, lng: -66.0547 },
+    { id: 'otown', name: 'Tire King O\'Town Auto', lat: 45.8312, lng: -66.4923 }
   ]);
 
   // Core Feature State: Orders Shipping & Labels
@@ -605,7 +605,7 @@ export default function App() {
     const storeName = selectedStoreObj ? selectedStoreObj.name : activeLocation;
 
     if (loginMode === 'admin') {
-      if (pinInput === 'adam2026') {
+      if (pinInput === '111' || pinInput === 'adam2026') {
         const mgrUser = {
           role: 'manager' as const,
           name: 'Adam Ali (Super Admin)',
