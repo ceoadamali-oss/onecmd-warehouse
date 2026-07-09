@@ -25,7 +25,8 @@ import {
   DollarSign,
   Shield,
   UserPlus,
-  MapPin
+  MapPin,
+  ChevronDown
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import { parseTireSticker, parseTireSidewall, parseBulkStack, estimateStackCount, inferWinterApprovedFromCatalog } from './openaiClient';
@@ -35,7 +36,28 @@ import type { PendingTransaction } from './offlineStorage';
 import { ScanViewfinder } from './components/ScanViewfinder';
 import { WinterApprovedToggle } from './components/WinterApprovedToggle';
 
-type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs' | 'timecard' | 'schedule' | 'payroll' | 'permissions';
+type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs' | 'timecard' | 'workforce' | 'schedule' | 'payroll' | 'permissions';
+
+type AppUser = {
+  role: 'worker' | 'manager';
+  name: string;
+  location: string;
+  technicianId?: string;
+  isSuperAdmin?: boolean;
+};
+
+/** Geofence radius around each shop — 100 meters */
+const GEOFENCE_RADIUS_KM = 0.1;
+/** Grace period after leaving fence before auto clock-out */
+const GEOFENCE_GRACE_MS = 15 * 60 * 1000;
+
+function formatElapsedSince(isoDate: string): string {
+  const elapsedMs = Math.max(0, Date.now() - Date.parse(isoDate));
+  const secs = Math.floor((elapsedMs / 1000) % 60);
+  const mins = Math.floor((elapsedMs / 60000) % 60);
+  const hrs = Math.floor(elapsedMs / 3600000);
+  return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
 
 export interface CustomerOrder {
   id: string;
@@ -83,9 +105,18 @@ export default function App() {
   const [locationName, setLocationName] = useState<string>('');
   const [pinInput, setPinInput] = useState<string>('');
   const [loginMode, setLoginMode] = useState<'technician' | 'admin'>('technician');
-  const [currentUser, setCurrentUser] = useState<{ role: 'worker' | 'manager'; name: string; location: string; technicianId?: string } | null>(() => {
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
     const saved = localStorage.getItem('onecmd_current_user');
-    return saved ? JSON.parse(saved) : null;
+    if (!saved) return null;
+    try {
+      const parsed = JSON.parse(saved) as AppUser;
+      if (parsed.role === 'manager' && !parsed.technicianId) {
+        parsed.isSuperAdmin = true;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
   });
   const [authError, setAuthError] = useState<string>('');
 
@@ -185,7 +216,9 @@ export default function App() {
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [distanceToShop, setDistanceToShop] = useState<number | null>(null);
   const [isOnSite, setIsOnSite] = useState(false);
-  const [outOfBoundsCount, setOutOfBoundsCount] = useState(0);
+  const [geofenceExitAt, setGeofenceExitAt] = useState<number | null>(null);
+  const [workforceTick, setWorkforceTick] = useState(0);
+  const [workforceExpanded, setWorkforceExpanded] = useState(false);
 
   // Manager Payroll / Tech Management states
   const [newTechName, setNewTechName] = useState('');
@@ -211,6 +244,11 @@ export default function App() {
 
   const timerRef = useRef<any>(null);
   const heartbeatIntervalRef = useRef<any>(null);
+
+  /** Super admin = manager login (password), not PIN staff */
+  const isSuperAdminUser = Boolean(
+    currentUser?.isSuperAdmin ?? (currentUser?.role === 'manager' && !currentUser?.technicianId)
+  );
 
   // Load / Initialize system config from Supabase
   const loadConfig = async () => {
@@ -317,15 +355,29 @@ export default function App() {
       setLocationName(savedName);
     }
 
+    const savedUser = localStorage.getItem('onecmd_current_user');
+    if (savedUser) {
+      try {
+        const parsed = JSON.parse(savedUser) as AppUser;
+        if (parsed.role === 'manager' && !parsed.technicianId && !parsed.isSuperAdmin) {
+          parsed.isSuperAdmin = true;
+          localStorage.setItem('onecmd_current_user', JSON.stringify(parsed));
+          setCurrentUser(parsed);
+        }
+      } catch {
+        /* ignore invalid session */
+      }
+    }
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
 
-  // Sync active shift from configDb once loaded and currentUser is set
+  // Sync active shift from configDb once loaded and user can clock in
   useEffect(() => {
-    if (configDb && currentUser && currentUser.role === 'worker') {
+    if (configDb && currentUser?.technicianId && !isSuperAdminUser) {
       const active = configDb.timecards.find(
         (tc: any) => tc.technicianId === currentUser.technicianId && tc.status === 'active'
       );
@@ -336,39 +388,62 @@ export default function App() {
         setIsClockedIn(false);
         setActiveShift(null);
       }
+    } else if (isSuperAdminUser) {
+      setIsClockedIn(false);
+      setActiveShift(null);
     }
   }, [configDb, currentUser]);
 
-  // Heartbeat loop for geofence validation
+  // Heartbeat loop for geofence validation (staff who clock in)
   useEffect(() => {
-    if (currentUser && currentUser.role === 'worker') {
+    if (currentUser?.technicianId && !isSuperAdminUser) {
       checkGeofence();
-      
-      // Start 5-minute battery-optimized heartbeat checks
+
+      const intervalMs = isClockedIn ? 120000 : 300000;
       heartbeatIntervalRef.current = setInterval(() => {
         checkGeofence();
-      }, 300000);
+      }, intervalMs);
     }
     return () => {
       if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
     };
-  }, [currentUser, activeLocation]);
+  }, [currentUser, activeLocation, isClockedIn]);
 
-  // Handle out of bounds grace period checks
+  // Track when staff leave the geofence while clocked in
   useEffect(() => {
-    if (isClockedIn && distanceToShop !== null) {
-      const isBreaching = distanceToShop > 0.15; // 150m boundary limit
-      if (isBreaching) {
-        const newCount = outOfBoundsCount + 1;
-        setOutOfBoundsCount(newCount);
-        if (newCount >= 3) {
-          triggerAutoClockOut();
-        }
-      } else {
-        setOutOfBoundsCount(0);
-      }
+    if (!isClockedIn || distanceToShop === null) return;
+
+    const isBreaching = distanceToShop > GEOFENCE_RADIUS_KM;
+    if (isBreaching) {
+      setGeofenceExitAt((prev) => prev ?? Date.now());
+    } else {
+      setGeofenceExitAt(null);
     }
   }, [distanceToShop, isClockedIn]);
+
+  // Auto clock-out after 15 min grace — records clock-out at leave time
+  useEffect(() => {
+    if (!isClockedIn || !geofenceExitAt) return;
+
+    const checkGrace = () => {
+      if (distanceToShop !== null && distanceToShop > GEOFENCE_RADIUS_KM) {
+        if (Date.now() - geofenceExitAt >= GEOFENCE_GRACE_MS) {
+          triggerAutoClockOut(new Date(geofenceExitAt).toISOString());
+        }
+      }
+    };
+
+    checkGrace();
+    const interval = setInterval(checkGrace, 30000);
+    return () => clearInterval(interval);
+  }, [isClockedIn, geofenceExitAt, distanceToShop]);
+
+  // Live timer tick for super admin workforce panel
+  useEffect(() => {
+    if (!isSuperAdminUser) return;
+    const tick = setInterval(() => setWorkforceTick((t) => t + 1), 1000);
+    return () => clearInterval(tick);
+  }, [isSuperAdminUser]);
 
   // Shift Timer Tick
   useEffect(() => {
@@ -568,8 +643,7 @@ export default function App() {
         if (currentLoc) {
           const dist = calculateDistance(latitude, longitude, currentLoc.lat, currentLoc.lng);
           setDistanceToShop(dist);
-          const onSite = dist <= 0.15; // 150m boundary
-          setIsOnSite(onSite);
+          setIsOnSite(dist <= GEOFENCE_RADIUS_KM);
         }
       },
       (err) => {
@@ -580,18 +654,17 @@ export default function App() {
     );
   };
 
-  const triggerAutoClockOut = async () => {
+  const triggerAutoClockOut = async (clockOutAtIso?: string) => {
     if (!isClockedIn || !activeShift || !configDb) return;
     try {
-      // Auto clock-out uses the timestamp from 15 minutes ago (3 heartbeat counts * 5 minutes)
-      const clockOutTime = new Date(Date.now() - 900000).toISOString();
+      const clockOutTime = clockOutAtIso || new Date().toISOString();
       const updatedTimecards = configDb.timecards.map((tc: any) => {
         if (tc.id === activeShift.id) {
           return {
             ...tc,
             status: 'completed',
             clockOut: clockOutTime,
-            notes: 'Auto clock-out: geofence breach exceeded 15 minutes grace period'
+            notes: 'Auto clock-out: left shop geofence and did not return within 15 minutes'
           };
         }
         return tc;
@@ -605,8 +678,8 @@ export default function App() {
       await saveConfig(updated);
       setIsClockedIn(false);
       setActiveShift(null);
-      setOutOfBoundsCount(0);
-      showTemporaryMessage('error', 'Auto clock-out: Geofence boundary exceeded for 15+ minutes.');
+      setGeofenceExitAt(null);
+      showTemporaryMessage('error', 'Auto clock-out: you left the shop and did not return within 15 minutes.');
     } catch (e: any) {
       console.error('Failed auto clock-out:', e);
     }
@@ -630,10 +703,11 @@ export default function App() {
 
     if (loginMode === 'admin') {
       if (pinInput === '111' || pinInput === 'adam2026') {
-        const mgrUser = {
-          role: 'manager' as const,
+        const mgrUser: AppUser = {
+          role: 'manager',
           name: 'Adam Ali (Super Admin)',
-          location: activeLocation
+          location: activeLocation,
+          isSuperAdmin: true
         };
         setCurrentUser(mgrUser);
         setLocationName(storeName);
@@ -650,8 +724,8 @@ export default function App() {
       // Find technician with matching PIN
       const techUser = configDb.technicians.find((t: any) => t.pin === pinInput);
       if (techUser) {
-        const workerUser = {
-          role: 'worker' as const,
+        const workerUser: AppUser = {
+          role: 'worker',
           name: techUser.name,
           location: activeLocation,
           technicianId: techUser.id
@@ -680,7 +754,115 @@ export default function App() {
     setActiveTab('dashboard');
     setIsClockedIn(false);
     setActiveShift(null);
+    setGeofenceExitAt(null);
     if (timerRef.current) clearInterval(timerRef.current);
+  };
+
+  const getActiveShifts = () => (configDb?.timecards || []).filter((tc: any) => tc.status === 'active');
+
+  const renderWorkforceMonitor = (opts?: { fullPage?: boolean; collapsible?: boolean; expanded?: boolean; onToggle?: () => void }) => {
+    void workforceTick;
+    const activeShifts = getActiveShifts();
+    const totalOnClock = activeShifts.length;
+    const locationsWithStaff = new Set(activeShifts.map((s: any) => s.locationId)).size;
+    const collapsible = opts?.collapsible ?? false;
+    const expanded = opts?.expanded ?? true;
+    const showDetails = !collapsible || expanded;
+
+    const HeaderTag = collapsible ? 'button' : 'div';
+
+    return (
+      <div className={`workforce-panel ${collapsible && !expanded ? 'workforce-panel--collapsed' : ''}`}>
+        <HeaderTag
+          {...(collapsible ? { type: 'button' as const } : {})}
+          className={`workforce-panel__header ${collapsible ? 'workforce-panel__header--toggle' : ''}`}
+          onClick={collapsible ? opts?.onToggle : undefined}
+          aria-expanded={collapsible ? expanded : undefined}
+        >
+          <div className="workforce-panel__header-left">
+            <h3 className="workforce-panel__title">🕒 Live Workforce</h3>
+            {collapsible && !expanded && (
+              <span className="workforce-panel__teaser">
+                {totalOnClock > 0
+                  ? `${totalOnClock} on clock · ${locationsWithStaff} location${locationsWithStaff === 1 ? '' : 's'}`
+                  : 'Tap to view all locations'}
+              </span>
+            )}
+          </div>
+          <div className="workforce-panel__header-right">
+            <span className={`badge ${totalOnClock > 0 ? 'badge-green' : 'badge-amber'}`}>
+              {totalOnClock > 0 ? `${totalOnClock} On Clock` : 'All Off'}
+            </span>
+            {collapsible && (
+              <ChevronDown className={`workforce-panel__chevron ${expanded ? 'workforce-panel__chevron--open' : ''}`} aria-hidden="true" />
+            )}
+          </div>
+        </HeaderTag>
+
+        {showDetails && (
+          <div className="workforce-panel__body">
+            <div className="workforce-summary">
+              <div className="workforce-summary__card">
+                <div className="workforce-summary__value">{totalOnClock}</div>
+                <div className="workforce-summary__label">Working Now</div>
+              </div>
+              <div className="workforce-summary__card">
+                <div className="workforce-summary__value">{locationsWithStaff}</div>
+                <div className="workforce-summary__label">Locations Active</div>
+              </div>
+              <div className="workforce-summary__card">
+                <div className="workforce-summary__value">{locations.length}</div>
+                <div className="workforce-summary__label">Total Stores</div>
+              </div>
+            </div>
+
+            {locations.map((loc) => {
+              const atLocation = activeShifts.filter((s: any) => s.locationId === loc.id);
+
+              return (
+                <div key={loc.id} className="workforce-location">
+                  <h4 className="workforce-location__title">
+                    <span>{loc.name}</span>
+                    <span className={`badge ${atLocation.length > 0 ? 'badge-green' : 'badge-amber'} text-xs`}>
+                      {atLocation.length > 0 ? `${atLocation.length} working` : 'Off duty'}
+                    </span>
+                  </h4>
+                  {atLocation.length === 0 ? (
+                    <div className="workforce-empty">Nobody clocked in at this location.</div>
+                  ) : (
+                    atLocation.map((shift: any) => (
+                      <div key={shift.id} className="workforce-worker">
+                        <div>
+                          <div className="workforce-worker__name">{shift.technicianName}</div>
+                          <div className="workforce-worker__meta">
+                            Clocked in {new Date(shift.clockIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </div>
+                        </div>
+                        <div className="workforce-worker__timer">{formatElapsedSince(shift.clockIn)}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              );
+            })}
+
+            {opts?.fullPage ? (
+              <p className="text-xs text-gray-400 mt-2 text-center">
+                100m GPS geofence · 15 min grace if staff leave the shop
+              </p>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setActiveTab('workforce')}
+                className="workforce-panel__full-link"
+              >
+                Open full monitor & shift history →
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
   };
 
   // Trigger sync of offline items
@@ -1872,8 +2054,17 @@ export default function App() {
           <div className="space-y-6 flex-1 flex flex-col justify-between">
             {/* Stack of actions based on roles & permissions */}
             <div className="space-y-4">
+              {/* Super Admin: Live Workforce — always first on dashboard */}
+              {isSuperAdminUser && (
+                renderWorkforceMonitor({
+                  collapsible: true,
+                  expanded: workforceExpanded,
+                  onToggle: () => setWorkforceExpanded((v) => !v),
+                })
+              )}
+
               {/* Role: Technician (Worker) dashboard sections */}
-              {currentUser?.role === 'worker' && (() => {
+              {currentUser?.technicianId && !isSuperAdminUser && (() => {
                 const currentTechProfile = configDb?.technicians.find(t => t.id === currentUser.technicianId);
                 const canEditInventory = currentTechProfile?.canEditInventory ?? false;
 
@@ -2058,7 +2249,7 @@ export default function App() {
                 );
               })()}
 
-              {/* Role: Manager / Admin dashboard sections */}
+              {/* Role: Manager / Super Admin dashboard sections */}
               {currentUser?.role === 'manager' && (
                 <>
                   {/* Roster Builder & Scheduler */}
@@ -2366,7 +2557,7 @@ export default function App() {
               />
             ) : (
               <div className="space-y-3.5 flex-1 flex flex-col">
-                <div className="relative rounded-2xl overflow-hidden border border-glass max-h-[90px]">
+                <div className="receive-scan-preview relative">
                   <img src={receivePhoto} alt="Tire Label Preview" className="w-full h-full object-cover" />
                   <button 
                     onClick={() => { 
@@ -2413,32 +2604,38 @@ export default function App() {
 
                 {extractedSpecs && !receiveScanError && (
                   <div className="receive-result-stack">
-                    <div className="glass-panel space-y-4 glass-panel--success receive-specs-card">
-                    <div className="flex items-center justify-between border-b border-glass pb-2">
-                      <h3 className="font-bold text-emerald-600">Extracted AI Specs</h3>
-                      {skuExists !== null && (
-                        <span className={`badge ${skuExists ? 'badge-green' : 'badge-blue'}`}>
-                          {skuExists ? 'Existing SKU' : 'New Catalog Product'}
-                        </span>
-                      )}
-                    <div className="spec-grid gap-y-4 gap-x-3">
-                      <div className="col-span-2">
-                        <span className="spec-grid__label">Product Type</span>
-                        <select
-                          value={extractedSpecs.product_type || 'tire'}
-                          onChange={(e) => {
-                            const val = e.target.value as 'tire' | 'wheel';
-                            setExtractedSpecs({ ...extractedSpecs, product_type: val });
-                          }}
-                          className="intake-field"
-                        >
-                          <option value="tire">🚗 Tire</option>
-                          <option value="wheel">⭕ Wheel</option>
-                        </select>
+                    <div className="glass-panel glass-panel--success receive-specs-card">
+                      <div className="receive-specs-card__header">
+                        <h3>Extracted AI Specs</h3>
+                        {skuExists !== null && (
+                          <span className={`badge ${skuExists ? 'badge-green' : 'badge-blue'}`}>
+                            {skuExists ? 'Existing SKU' : 'New Catalog Product'}
+                          </span>
+                        )}
                       </div>
 
+                      <div className="receive-specs-card__body">
+                        <div className="intake-form">
+                          <div className="intake-section">
+                            <h4 className="intake-section__title">Product</h4>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">Product Type</span>
+                              <select
+                                value={extractedSpecs.product_type || 'tire'}
+                                onChange={(e) => {
+                                  const val = e.target.value as 'tire' | 'wheel';
+                                  setExtractedSpecs({ ...extractedSpecs, product_type: val });
+                                }}
+                                className="intake-field"
+                              >
+                                <option value="tire">🚗 Tire</option>
+                                <option value="wheel">⭕ Wheel</option>
+                              </select>
+                            </div>
+                          </div>
+
                       {skuExists === false && (
-                        <div className="col-span-2 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3.5 space-y-3">
+                        <div className="intake-section bg-amber-500/10 border-amber-500/20">
                           <div className="flex items-start gap-2.5 text-amber-400">
                             <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
                             <div>
@@ -2494,247 +2691,275 @@ export default function App() {
 
                       {extractedSpecs.product_type === 'wheel' ? (
                         <>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label flex items-center justify-between">
-                              <span className="flex items-center gap-1.5">
-                                Brand
-                                {extractedSpecs.brand?.trim() && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const oldBrand = extractedSpecs.brand;
-                                      setExtractedSpecs({
-                                        ...extractedSpecs,
-                                        brand: '',
-                                        model: oldBrand
-                                      });
-                                    }}
-                                    className="text-[9px] bg-white border border-glass text-slate-600 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1 hover:bg-glass-dark"
-                                    title="Move brand name to model and enter brand manually"
-                                  >
-                                    Move to Model ⇄
-                                  </button>
+                          <div className="intake-section">
+                            <h4 className="intake-section__title">Brand & Model</h4>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label flex items-center justify-between">
+                                <span className="flex items-center gap-1.5">
+                                  Brand
+                                  {extractedSpecs.brand?.trim() && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const oldBrand = extractedSpecs.brand;
+                                        setExtractedSpecs({
+                                          ...extractedSpecs,
+                                          brand: '',
+                                          model: oldBrand
+                                        });
+                                      }}
+                                      className="text-[10px] bg-white border border-glass text-slate-600 font-bold px-2 py-1 rounded-lg transition-all flex items-center gap-1 hover:bg-glass-dark normal-case tracking-normal"
+                                      title="Move brand name to model and enter brand manually"
+                                    >
+                                      Move to Model ⇄
+                                    </button>
+                                  )}
+                                </span>
+                                {!extractedSpecs.brand?.trim() && (
+                                  <span className="text-[10px] text-amber-500 font-bold uppercase animate-pulse normal-case tracking-normal">⚠️ Enter Brand</span>
                                 )}
                               </span>
-                              {!extractedSpecs.brand?.trim() && (
-                                <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
-                              )}
-                            </span>
-                            <textarea
-                              rows={2}
-                              placeholder="Enter brand name..."
-                              value={extractedSpecs.brand || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, brand: e.target.value })}
-                              className={`intake-field intake-field--text ${!extractedSpecs.brand?.trim() ? 'intake-field--warn' : ''}`}
-                            />
-                          </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Model</span>
-                            <textarea
-                              rows={2}
-                              placeholder="Enter model name..."
-                              value={extractedSpecs.model || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, model: e.target.value })}
-                              className="intake-field intake-field--text"
-                            />
-                          </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Finish / Color</span>
-                            <input
-                              type="text"
-                              placeholder="Enter finish/color..."
-                              value={extractedSpecs.finish || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, finish: e.target.value })}
-                              className="intake-field"
-                            />
-                          </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Part Number</span>
-                            <input
-                              type="text"
-                              placeholder="Enter part number..."
-                              value={extractedSpecs.part_number || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, part_number: e.target.value })}
-                              className="intake-field"
-                            />
-                          </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Size</span>
-                            <input
-                              type="text"
-                              placeholder="e.g. 18x8.5"
-                              value={extractedSpecs.size || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, size: e.target.value })}
-                              className="intake-field"
-                            />
-                          </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Bolt Pattern (PCD)</span>
-                            <input
-                              type="text"
-                              value={extractedSpecs.bolt_pattern || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, bolt_pattern: e.target.value })}
-                              className="intake-field"
-                            />
-                          </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Offset (ET)</span>
-                            <input
-                              type="text"
-                              value={extractedSpecs.offset || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, offset: e.target.value })}
-                              className="intake-field"
-                            />
-                          </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Center Bore (CB)</span>
-                            <input
-                              type="text"
-                              value={extractedSpecs.center_bore || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, center_bore: e.target.value })}
-                              className="intake-field"
-                            />
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label flex items-center justify-between">
-                              <span className="flex items-center gap-1.5">
-                                Brand
-                                {extractedSpecs.brand?.trim() && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const oldBrand = extractedSpecs.brand;
-                                      setExtractedSpecs({
-                                        ...extractedSpecs,
-                                        brand: '',
-                                        model: oldBrand
-                                      });
-                                    }}
-                                    className="text-[9px] bg-white border border-glass text-slate-600 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1 hover:bg-glass-dark"
-                                    title="Move brand name to model and enter brand manually"
-                                  >
-                                    Move to Model ⇄
-                                  </button>
-                                )}
-                              </span>
-                              {!extractedSpecs.brand?.trim() && (
-                                <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
-                              )}
-                            </span>
-                            <textarea
-                              rows={2}
-                              placeholder="Enter brand name..."
-                              value={extractedSpecs.brand || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, brand: e.target.value })}
-                              className={`intake-field intake-field--text ${!extractedSpecs.brand?.trim() ? 'intake-field--warn' : ''}`}
-                            />
-                          </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Model</span>
-                            <textarea
-                              rows={2}
-                              placeholder="Enter model name..."
-                              value={extractedSpecs.model || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, model: e.target.value })}
-                              className="intake-field intake-field--text"
-                            />
-                          </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Size</span>
-                            <input
-                              type="text"
-                              placeholder="e.g. 225/45R17"
-                              value={extractedSpecs.size || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, size: e.target.value })}
-                              className="intake-field"
-                            />
-                          </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Load/Speed</span>
-                            <div className="flex gap-1 mt-1.5">
-                              <input
-                                type="text"
-                                placeholder="LI"
-                                value={extractedSpecs.load_index || ''}
-                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, load_index: e.target.value })}
-                                className="intake-field intake-field--compact w-1/2"
+                              <textarea
+                                rows={3}
+                                placeholder="Enter brand name..."
+                                value={extractedSpecs.brand || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, brand: e.target.value })}
+                                className={`intake-field intake-field--text ${!extractedSpecs.brand?.trim() ? 'intake-field--warn' : ''}`}
                               />
-                              <input
-                                type="text"
-                                placeholder="SR"
-                                value={extractedSpecs.speed_rating || ''}
-                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, speed_rating: e.target.value })}
-                                className="intake-field intake-field--compact w-1/2"
+                            </div>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">Model</span>
+                              <textarea
+                                rows={3}
+                                placeholder="Enter model name..."
+                                value={extractedSpecs.model || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, model: e.target.value })}
+                                className="intake-field intake-field--text"
                               />
                             </div>
                           </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Load Range</span>
-                            <input
-                              type="text"
-                              value={extractedSpecs.load_range || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, load_range: e.target.value })}
-                              className="intake-field"
-                            />
+                          <div className="intake-section">
+                            <h4 className="intake-section__title">Wheel Specs</h4>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">Finish / Color</span>
+                              <input
+                                type="text"
+                                placeholder="Enter finish/color..."
+                                value={extractedSpecs.finish || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, finish: e.target.value })}
+                                className="intake-field"
+                              />
+                            </div>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">Part Number</span>
+                              <input
+                                type="text"
+                                placeholder="Enter part number..."
+                                value={extractedSpecs.part_number || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, part_number: e.target.value })}
+                                className="intake-field"
+                              />
+                            </div>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">Size</span>
+                              <input
+                                type="text"
+                                placeholder="e.g. 18x8.5"
+                                value={extractedSpecs.size || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, size: e.target.value })}
+                                className="intake-field"
+                              />
+                            </div>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">Bolt Pattern (PCD)</span>
+                              <input
+                                type="text"
+                                value={extractedSpecs.bolt_pattern || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, bolt_pattern: e.target.value })}
+                                className="intake-field"
+                              />
+                            </div>
+                            <div className="intake-field-pair">
+                              <div className="intake-field-wrap">
+                                <span className="spec-grid__label">Offset (ET)</span>
+                                <input
+                                  type="text"
+                                  value={extractedSpecs.offset || ''}
+                                  onChange={(e) => setExtractedSpecs({ ...extractedSpecs, offset: e.target.value })}
+                                  className="intake-field"
+                                />
+                              </div>
+                              <div className="intake-field-wrap">
+                                <span className="spec-grid__label">Center Bore (CB)</span>
+                                <input
+                                  type="text"
+                                  value={extractedSpecs.center_bore || ''}
+                                  onChange={(e) => setExtractedSpecs({ ...extractedSpecs, center_bore: e.target.value })}
+                                  className="intake-field"
+                                />
+                              </div>
+                            </div>
                           </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Season</span>
-                            <select
-                              value={extractedSpecs.season || 'All-Season'}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setExtractedSpecs({ ...extractedSpecs, season: val });
-                                if (val === 'Winter') {
-                                  setWinterApproved(true);
-                                }
-                              }}
-                              className="intake-field"
-                            >
-                              <option value="All-Season">All-Season</option>
-                              <option value="Winter">Winter</option>
-                              <option value="Summer">Summer</option>
-                              <option value="All-Terrain">All-Terrain</option>
-                            </select>
+
+                        </>
+                      ) : (
+                        <>
+                          <div className="intake-section">
+                            <h4 className="intake-section__title">Brand & Model</h4>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label flex items-center justify-between">
+                                <span className="flex items-center gap-1.5">
+                                  Brand
+                                  {extractedSpecs.brand?.trim() && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const oldBrand = extractedSpecs.brand;
+                                        setExtractedSpecs({
+                                          ...extractedSpecs,
+                                          brand: '',
+                                          model: oldBrand
+                                        });
+                                      }}
+                                      className="text-[10px] bg-white border border-glass text-slate-600 font-bold px-2 py-1 rounded-lg transition-all flex items-center gap-1 hover:bg-glass-dark normal-case tracking-normal"
+                                      title="Move brand name to model and enter brand manually"
+                                    >
+                                      Move to Model ⇄
+                                    </button>
+                                  )}
+                                </span>
+                                {!extractedSpecs.brand?.trim() && (
+                                  <span className="text-[10px] text-amber-500 font-bold uppercase animate-pulse normal-case tracking-normal">⚠️ Enter Brand</span>
+                                )}
+                              </span>
+                              <textarea
+                                rows={3}
+                                placeholder="Enter brand name..."
+                                value={extractedSpecs.brand || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, brand: e.target.value })}
+                                className={`intake-field intake-field--text ${!extractedSpecs.brand?.trim() ? 'intake-field--warn' : ''}`}
+                              />
+                            </div>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">Model</span>
+                              <textarea
+                                rows={3}
+                                placeholder="Enter model name..."
+                                value={extractedSpecs.model || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, model: e.target.value })}
+                                className="intake-field intake-field--text"
+                              />
+                            </div>
                           </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">Ply Rating</span>
-                            <input
-                              type="text"
-                              value={extractedSpecs.ply_rating || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, ply_rating: e.target.value })}
-                              className="intake-field"
-                            />
+
+                          <div className="intake-section">
+                            <h4 className="intake-section__title">Tire Specs</h4>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">Size</span>
+                              <input
+                                type="text"
+                                placeholder="e.g. 225/45R17"
+                                value={extractedSpecs.size || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, size: e.target.value })}
+                                className="intake-field"
+                              />
+                            </div>
+                            <div className="intake-field-pair">
+                              <div className="intake-field-wrap">
+                                <span className="spec-grid__label">Load Index</span>
+                                <input
+                                  type="text"
+                                  placeholder="e.g. 95"
+                                  value={extractedSpecs.load_index || ''}
+                                  onChange={(e) => setExtractedSpecs({ ...extractedSpecs, load_index: e.target.value })}
+                                  className="intake-field"
+                                />
+                              </div>
+                              <div className="intake-field-wrap">
+                                <span className="spec-grid__label">Speed Rating</span>
+                                <input
+                                  type="text"
+                                  placeholder="e.g. H"
+                                  value={extractedSpecs.speed_rating || ''}
+                                  onChange={(e) => setExtractedSpecs({ ...extractedSpecs, speed_rating: e.target.value })}
+                                  className="intake-field"
+                                />
+                              </div>
+                            </div>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">Load Range</span>
+                              <input
+                                type="text"
+                                placeholder="e.g. SL, XL, C"
+                                value={extractedSpecs.load_range || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, load_range: e.target.value })}
+                                className="intake-field"
+                              />
+                            </div>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">Season</span>
+                              <select
+                                value={extractedSpecs.season || 'All-Season'}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setExtractedSpecs({ ...extractedSpecs, season: val });
+                                  if (val === 'Winter') {
+                                    setWinterApproved(true);
+                                  }
+                                }}
+                                className="intake-field"
+                              >
+                                <option value="All-Season">All-Season</option>
+                                <option value="Winter">Winter</option>
+                                <option value="Summer">Summer</option>
+                                <option value="All-Terrain">All-Terrain</option>
+                              </select>
+                            </div>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">Ply Rating</span>
+                              <input
+                                type="text"
+                                placeholder="e.g. 4 Ply"
+                                value={extractedSpecs.ply_rating || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, ply_rating: e.target.value })}
+                                className="intake-field"
+                              />
+                            </div>
                           </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">DOT Code</span>
-                            <input
-                              type="text"
-                              value={extractedSpecs.dot_code || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, dot_code: e.target.value })}
-                              className="intake-field"
-                            />
-                          </div>
-                          <div className="col-span-2">
-                            <span className="spec-grid__label">UTQG Rating</span>
-                            <input
-                              type="text"
-                              value={extractedSpecs.utqg || ''}
-                              onChange={(e) => setExtractedSpecs({ ...extractedSpecs, utqg: e.target.value })}
-                              className="intake-field"
-                            />
+
+                          <div className="intake-section">
+                            <h4 className="intake-section__title">Compliance</h4>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">DOT Code</span>
+                              <input
+                                type="text"
+                                placeholder="DOT code from sidewall"
+                                value={extractedSpecs.dot_code || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, dot_code: e.target.value })}
+                                className="intake-field"
+                              />
+                            </div>
+                            <div className="intake-field-wrap">
+                              <span className="spec-grid__label">UTQG Rating</span>
+                              <input
+                                type="text"
+                                placeholder="e.g. 500 A A"
+                                value={extractedSpecs.utqg || ''}
+                                onChange={(e) => setExtractedSpecs({ ...extractedSpecs, utqg: e.target.value })}
+                                className="intake-field"
+                              />
+                            </div>
                           </div>
                         </>
                       )}
-                    </div>       </div>
 
-                    <WinterApprovedToggle
-                      enabled={winterApproved}
-                      onChange={setWinterApproved}
-                      aiDetected={winterApprovedAiDetected}
-                    />
+                        <WinterApprovedToggle
+                          enabled={winterApproved}
+                          onChange={setWinterApproved}
+                          aiDetected={winterApprovedAiDetected}
+                        />
+                        </div>
+                      </div>
                     </div>
 
                     <div className="thumb-zone receive-thumb-zone">
@@ -2835,26 +3060,29 @@ export default function App() {
                             Product #{idx + 1}: {item.brand} {item.model}
                           </h4>
 
-                          {/* Editable spec grid */}
-                          <div className="spec-grid gap-y-4 gap-x-3">
-                            <div className="col-span-2">
-                              <span className="spec-grid__label">Product Type</span>
-                              <select
-                                value={item.product_type || 'tire'}
-                                onChange={(e) => {
-                                  const val = e.target.value as 'tire' | 'wheel';
-                                  const updated = [...bulkExtractedSpecs];
-                                  updated[idx] = { ...updated[idx], product_type: val };
-                                  setBulkExtractedSpecs(updated);
-                                }}
-                                className="intake-field"
-                              >
-                                <option value="tire">🚗 Tire</option>
-                                <option value="wheel">⭕ Wheel</option>
-                              </select>
+                          {/* Editable spec form */}
+                          <div className="intake-form">
+                            <div className="intake-section">
+                              <h4 className="intake-section__title">Product</h4>
+                              <div className="intake-field-wrap">
+                                <span className="spec-grid__label">Product Type</span>
+                                <select
+                                  value={item.product_type || 'tire'}
+                                  onChange={(e) => {
+                                    const val = e.target.value as 'tire' | 'wheel';
+                                    const updated = [...bulkExtractedSpecs];
+                                    updated[idx] = { ...updated[idx], product_type: val };
+                                    setBulkExtractedSpecs(updated);
+                                  }}
+                                  className="intake-field"
+                                >
+                                  <option value="tire">🚗 Tire</option>
+                                  <option value="wheel">⭕ Wheel</option>
+                                </select>
+                              </div>
                             </div>
 
-                            <div className="col-span-2 bg-glass-dark/50 border border-glass rounded-xl p-3 space-y-2">
+                            <div className="intake-section bg-glass-dark/50">
                               <div className="flex items-center justify-between">
                                 <span className="text-xs font-semibold text-gray-400">Product Image:</span>
                                 {bulkProductPhotos[idx] && (
@@ -2915,308 +3143,332 @@ export default function App() {
 
                             {item.product_type === 'wheel' ? (
                               <>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label flex items-center justify-between">
-                                    <span className="flex items-center gap-1.5">
-                                      Brand
-                                      {item.brand?.trim() && (
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            const updated = [...bulkExtractedSpecs];
-                                            const oldBrand = updated[idx].brand;
-                                            updated[idx] = {
-                                              ...updated[idx],
-                                              brand: '',
-                                              model: oldBrand
-                                            };
-                                            setBulkExtractedSpecs(updated);
-                                          }}
-                                          className="text-[9px] bg-white border border-glass text-slate-600 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1 hover:bg-glass-dark"
-                                          title="Move brand name to model and enter brand manually"
-                                        >
-                                          Move to Model ⇄
-                                        </button>
+                                <div className="intake-section">
+                                  <h4 className="intake-section__title">Brand & Model</h4>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label flex items-center justify-between">
+                                      <span className="flex items-center gap-1.5">
+                                        Brand
+                                        {item.brand?.trim() && (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const updated = [...bulkExtractedSpecs];
+                                              const oldBrand = updated[idx].brand;
+                                              updated[idx] = {
+                                                ...updated[idx],
+                                                brand: '',
+                                                model: oldBrand
+                                              };
+                                              setBulkExtractedSpecs(updated);
+                                            }}
+                                            className="text-[10px] bg-white border border-glass text-slate-600 font-bold px-2 py-1 rounded-lg transition-all flex items-center gap-1 hover:bg-glass-dark normal-case tracking-normal"
+                                            title="Move brand name to model and enter brand manually"
+                                          >
+                                            Move to Model ⇄
+                                          </button>
+                                        )}
+                                      </span>
+                                      {!item.brand?.trim() && (
+                                        <span className="text-[10px] text-amber-500 font-bold uppercase animate-pulse normal-case tracking-normal">⚠️ Enter Brand</span>
                                       )}
                                     </span>
-                                    {!item.brand?.trim() && (
-                                      <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
-                                    )}
-                                  </span>
-                                  <textarea
-                                    rows={2}
-                                    placeholder="Enter brand name..."
-                                    value={item.brand || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], brand: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className={`intake-field intake-field--text ${!item.brand?.trim() ? 'intake-field--warn' : ''}`}
-                                  />
+                                    <textarea
+                                      rows={3}
+                                      placeholder="Enter brand name..."
+                                      value={item.brand || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], brand: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className={`intake-field intake-field--text ${!item.brand?.trim() ? 'intake-field--warn' : ''}`}
+                                    />
+                                  </div>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label">Model</span>
+                                    <textarea
+                                      rows={3}
+                                      placeholder="Enter model name..."
+                                      value={item.model || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], model: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="intake-field intake-field--text"
+                                    />
+                                  </div>
                                 </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Model</span>
-                                  <textarea
-                                    rows={2}
-                                    placeholder="Enter model name..."
-                                    value={item.model || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], model: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field intake-field--text"
-                                  />
-                                </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Finish / Color</span>
-                                  <input
-                                    type="text"
-                                    placeholder="Enter finish/color..."
-                                    value={item.finish || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], finish: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field"
-                                  />
-                                </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Part Number</span>
-                                  <input
-                                    type="text"
-                                    placeholder="Enter part number..."
-                                    value={item.part_number || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], part_number: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field"
-                                  />
-                                </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Size</span>
-                                  <input
-                                    type="text"
-                                    placeholder="e.g. 18x8.5"
-                                    value={item.size || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], size: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field"
-                                  />
-                                </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Bolt Pattern (PCD)</span>
-                                  <input
-                                    type="text"
-                                    value={item.bolt_pattern || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], bolt_pattern: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field"
-                                  />
-                                </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Offset (ET)</span>
-                                  <input
-                                    type="text"
-                                    value={item.offset || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], offset: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field"
-                                  />
-                                </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Center Bore (CB)</span>
-                                  <input
-                                    type="text"
-                                    value={item.center_bore || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], center_bore: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field"
-                                  />
+                                <div className="intake-section">
+                                  <h4 className="intake-section__title">Wheel Specs</h4>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label">Finish / Color</span>
+                                    <input
+                                      type="text"
+                                      placeholder="Enter finish/color..."
+                                      value={item.finish || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], finish: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="intake-field"
+                                    />
+                                  </div>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label">Part Number</span>
+                                    <input
+                                      type="text"
+                                      placeholder="Enter part number..."
+                                      value={item.part_number || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], part_number: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="intake-field"
+                                    />
+                                  </div>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label">Size</span>
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. 18x8.5"
+                                      value={item.size || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], size: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="intake-field"
+                                    />
+                                  </div>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label">Bolt Pattern (PCD)</span>
+                                    <input
+                                      type="text"
+                                      value={item.bolt_pattern || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], bolt_pattern: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="intake-field"
+                                    />
+                                  </div>
+                                  <div className="intake-field-pair">
+                                    <div className="intake-field-wrap">
+                                      <span className="spec-grid__label">Offset (ET)</span>
+                                      <input
+                                        type="text"
+                                        value={item.offset || ''}
+                                        onChange={(e) => {
+                                          const updated = [...bulkExtractedSpecs];
+                                          updated[idx] = { ...updated[idx], offset: e.target.value };
+                                          setBulkExtractedSpecs(updated);
+                                        }}
+                                        className="intake-field"
+                                      />
+                                    </div>
+                                    <div className="intake-field-wrap">
+                                      <span className="spec-grid__label">Center Bore (CB)</span>
+                                      <input
+                                        type="text"
+                                        value={item.center_bore || ''}
+                                        onChange={(e) => {
+                                          const updated = [...bulkExtractedSpecs];
+                                          updated[idx] = { ...updated[idx], center_bore: e.target.value };
+                                          setBulkExtractedSpecs(updated);
+                                        }}
+                                        className="intake-field"
+                                      />
+                                    </div>
+                                  </div>
                                 </div>
                               </>
                             ) : (
                               <>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label flex items-center justify-between">
-                                    <span className="flex items-center gap-1.5">
-                                      Brand
-                                      {item.brand?.trim() && (
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            const updated = [...bulkExtractedSpecs];
-                                            const oldBrand = updated[idx].brand;
-                                            updated[idx] = {
-                                              ...updated[idx],
-                                              brand: '',
-                                              model: oldBrand
-                                            };
-                                            setBulkExtractedSpecs(updated);
-                                          }}
-                                          className="text-[9px] bg-white border border-glass text-slate-600 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1 hover:bg-glass-dark"
-                                          title="Move brand name to model and enter brand manually"
-                                        >
-                                          Move to Model ⇄
-                                        </button>
+                                <div className="intake-section">
+                                  <h4 className="intake-section__title">Brand & Model</h4>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label flex items-center justify-between">
+                                      <span className="flex items-center gap-1.5">
+                                        Brand
+                                        {item.brand?.trim() && (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const updated = [...bulkExtractedSpecs];
+                                              const oldBrand = updated[idx].brand;
+                                              updated[idx] = {
+                                                ...updated[idx],
+                                                brand: '',
+                                                model: oldBrand
+                                              };
+                                              setBulkExtractedSpecs(updated);
+                                            }}
+                                            className="text-[10px] bg-white border border-glass text-slate-600 font-bold px-2 py-1 rounded-lg transition-all flex items-center gap-1 hover:bg-glass-dark normal-case tracking-normal"
+                                            title="Move brand name to model and enter brand manually"
+                                          >
+                                            Move to Model ⇄
+                                          </button>
+                                        )}
+                                      </span>
+                                      {!item.brand?.trim() && (
+                                        <span className="text-[10px] text-amber-500 font-bold uppercase animate-pulse normal-case tracking-normal">⚠️ Enter Brand</span>
                                       )}
                                     </span>
-                                    {!item.brand?.trim() && (
-                                      <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
-                                    )}
-                                  </span>
-                                  <textarea
-                                    rows={2}
-                                    placeholder="Enter brand name..."
-                                    value={item.brand || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], brand: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className={`intake-field intake-field--text ${!item.brand?.trim() ? 'intake-field--warn' : ''}`}
-                                  />
-                                </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Model</span>
-                                  <textarea
-                                    rows={2}
-                                    placeholder="Enter model name..."
-                                    value={item.model || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], model: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field intake-field--text"
-                                  />
-                                </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Size</span>
-                                  <input
-                                    type="text"
-                                    placeholder="e.g. 225/45R17"
-                                    value={item.size || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], size: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field"
-                                  />
-                                </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Load/Speed</span>
-                                  <div className="flex gap-1 mt-1.5">
-                                    <input
-                                      type="text"
-                                      placeholder="LI"
-                                      value={item.load_index || ''}
+                                    <textarea
+                                      rows={3}
+                                      placeholder="Enter brand name..."
+                                      value={item.brand || ''}
                                       onChange={(e) => {
                                         const updated = [...bulkExtractedSpecs];
-                                        updated[idx] = { ...updated[idx], load_index: e.target.value };
+                                        updated[idx] = { ...updated[idx], brand: e.target.value };
                                         setBulkExtractedSpecs(updated);
                                       }}
-                                      className="intake-field intake-field--compact w-1/2"
+                                      className={`intake-field intake-field--text ${!item.brand?.trim() ? 'intake-field--warn' : ''}`}
                                     />
-                                    <input
-                                      type="text"
-                                      placeholder="SR"
-                                      value={item.speed_rating || ''}
+                                  </div>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label">Model</span>
+                                    <textarea
+                                      rows={3}
+                                      placeholder="Enter model name..."
+                                      value={item.model || ''}
                                       onChange={(e) => {
                                         const updated = [...bulkExtractedSpecs];
-                                        updated[idx] = { ...updated[idx], speed_rating: e.target.value };
+                                        updated[idx] = { ...updated[idx], model: e.target.value };
                                         setBulkExtractedSpecs(updated);
                                       }}
-                                      className="intake-field intake-field--compact w-1/2"
+                                      className="intake-field intake-field--text"
                                     />
                                   </div>
                                 </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Load Range</span>
-                                  <input
-                                    type="text"
-                                    value={item.load_range || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], load_range: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field"
-                                  />
+                                <div className="intake-section">
+                                  <h4 className="intake-section__title">Tire Specs</h4>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label">Size</span>
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. 225/45R17"
+                                      value={item.size || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], size: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="intake-field"
+                                    />
+                                  </div>
+                                  <div className="intake-field-pair">
+                                    <div className="intake-field-wrap">
+                                      <span className="spec-grid__label">Load Index</span>
+                                      <input
+                                        type="text"
+                                        placeholder="e.g. 95"
+                                        value={item.load_index || ''}
+                                        onChange={(e) => {
+                                          const updated = [...bulkExtractedSpecs];
+                                          updated[idx] = { ...updated[idx], load_index: e.target.value };
+                                          setBulkExtractedSpecs(updated);
+                                        }}
+                                        className="intake-field"
+                                      />
+                                    </div>
+                                    <div className="intake-field-wrap">
+                                      <span className="spec-grid__label">Speed Rating</span>
+                                      <input
+                                        type="text"
+                                        placeholder="e.g. H"
+                                        value={item.speed_rating || ''}
+                                        onChange={(e) => {
+                                          const updated = [...bulkExtractedSpecs];
+                                          updated[idx] = { ...updated[idx], speed_rating: e.target.value };
+                                          setBulkExtractedSpecs(updated);
+                                        }}
+                                        className="intake-field"
+                                      />
+                                    </div>
+                                  </div>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label">Load Range</span>
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. SL, XL, C"
+                                      value={item.load_range || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], load_range: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="intake-field"
+                                    />
+                                  </div>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label">Season</span>
+                                    <select
+                                      value={item.season || 'All-Season'}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], season: val };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="intake-field"
+                                    >
+                                      <option value="All-Season">All-Season</option>
+                                      <option value="Winter">Winter</option>
+                                      <option value="Summer">Summer</option>
+                                      <option value="All-Terrain">All-Terrain</option>
+                                    </select>
+                                  </div>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label">Ply Rating</span>
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. 4 Ply"
+                                      value={item.ply_rating || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], ply_rating: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="intake-field"
+                                    />
+                                  </div>
                                 </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Season</span>
-                                  <select
-                                    value={item.season || 'All-Season'}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], season: val };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field"
-                                  >
-                                    <option value="All-Season">All-Season</option>
-                                    <option value="Winter">Winter</option>
-                                    <option value="Summer">Summer</option>
-                                    <option value="All-Terrain">All-Terrain</option>
-                                  </select>
-                                </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">Ply Rating</span>
-                                  <input
-                                    type="text"
-                                    value={item.ply_rating || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], ply_rating: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field"
-                                  />
-                                </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">DOT Code</span>
-                                  <input
-                                    type="text"
-                                    value={item.dot_code || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], dot_code: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field"
-                                  />
-                                </div>
-                                <div className="col-span-2">
-                                  <span className="spec-grid__label">UTQG Rating</span>
-                                  <input
-                                    type="text"
-                                    value={item.utqg || ''}
-                                    onChange={(e) => {
-                                      const updated = [...bulkExtractedSpecs];
-                                      updated[idx] = { ...updated[idx], utqg: e.target.value };
-                                      setBulkExtractedSpecs(updated);
-                                    }}
-                                    className="intake-field"
-                                  />
+                                <div className="intake-section">
+                                  <h4 className="intake-section__title">Compliance</h4>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label">DOT Code</span>
+                                    <input
+                                      type="text"
+                                      placeholder="DOT code from sidewall"
+                                      value={item.dot_code || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], dot_code: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="intake-field"
+                                    />
+                                  </div>
+                                  <div className="intake-field-wrap">
+                                    <span className="spec-grid__label">UTQG Rating</span>
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. 500 A A"
+                                      value={item.utqg || ''}
+                                      onChange={(e) => {
+                                        const updated = [...bulkExtractedSpecs];
+                                        updated[idx] = { ...updated[idx], utqg: e.target.value };
+                                        setBulkExtractedSpecs(updated);
+                                      }}
+                                      className="intake-field"
+                                    />
+                                  </div>
                                 </div>
                               </>
                             )}
@@ -4085,25 +4337,21 @@ export default function App() {
         </div>
       )}
 
-      {/* tab: Technician Timecard geofenced portal */}
-      {activeTab === 'timecard' && currentUser?.role === 'worker' && (
+      {/* tab: Staff Timecard (technicians & store managers — not super admin) */}
+      {activeTab === 'timecard' && currentUser?.technicianId && !isSuperAdminUser && (
         <div className="space-y-6 flex-1 flex flex-col">
           <div className="flex items-center gap-2 mb-2">
-            <button 
-              onClick={() => setActiveTab('dashboard')} 
-              className="btn-secondary py-2 px-3 bg-white/5 border border-glass text-slate-100"
-            >
+            <button onClick={() => setActiveTab('dashboard')} className="btn-secondary py-2 px-3">
               <ArrowLeftRight className="w-4 h-4 rotate-180 inline mr-1" /> Back
             </button>
-            <h2 className="text-lg font-bold text-white uppercase tracking-wider">My Timecard</h2>
+            <h2>My Timecard</h2>
           </div>
 
-          {/* Geofence Status Panel */}
-          <div className="glass-panel space-y-4">
-            <div className="flex items-center justify-between border-b border-glass pb-3">
+          <div className="glass-panel">
+            <div className="geofence-status">
               <div className="flex items-center gap-2 text-sm font-semibold text-gray-400">
-                <MapPin className="w-4 h-4 text-violet-400" />
-                <span>Geofence Boundary Check</span>
+                <MapPin className="w-4 h-4 text-primary" />
+                <span>GPS Geofence (100m)</span>
               </div>
               {isOnSite ? (
                 <span className="badge badge-green text-xs">On Site</span>
@@ -4112,42 +4360,53 @@ export default function App() {
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-4 text-xs">
-              <div className="space-y-1">
-                <span className="text-gray-500 block">GPS Coordinates:</span>
-                <span className="font-mono text-slate-300">
-                  {gpsCoords ? `${gpsCoords.lat.toFixed(5)}, ${gpsCoords.lng.toFixed(5)}` : 'Detecting GPS...'}
+            <div className="grid grid-cols-2 gap-4 text-xs mb-3">
+              <div>
+                <span className="text-gray-500 block mb-1">GPS Coordinates</span>
+                <span className="geofence-status__coords">
+                  {gpsCoords ? `${gpsCoords.lat.toFixed(5)}, ${gpsCoords.lng.toFixed(5)}` : 'Detecting...'}
                 </span>
               </div>
-              <div className="space-y-1">
-                <span className="text-gray-500 block">Distance to Shop:</span>
-                <span className="font-semibold text-slate-300">
-                  {distanceToShop !== null ? `${Math.round(distanceToShop * 1000)} meters` : 'Calculating...'}
+              <div>
+                <span className="text-gray-500 block mb-1">Distance to Shop</span>
+                <span className="font-semibold text-slate-800">
+                  {distanceToShop !== null ? `${Math.round(distanceToShop * 1000)} m` : 'Calculating...'}
                 </span>
               </div>
             </div>
 
             {gpsError && (
-              <div className="text-[11px] text-rose-400 bg-rose-500/10 p-2.5 rounded-lg border border-rose-500/20">
-                ⚠️ {gpsError}
+              <div className="scan-result-alert scan-result-alert--error text-xs">
+                <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                <span>{gpsError}</span>
+              </div>
+            )}
+
+            {isClockedIn && geofenceExitAt && (
+              <div className="scan-result-alert scan-result-alert--error text-xs mt-3">
+                <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                <span>
+                  You left the shop. Return within{' '}
+                  {Math.max(0, Math.ceil((GEOFENCE_GRACE_MS - (Date.now() - geofenceExitAt)) / 60000))} min
+                  {' '}or you will be auto clocked out at your leave time.
+                </span>
               </div>
             )}
           </div>
 
-          {/* Clock Controls */}
-          <div className="glass-panel flex flex-col items-center justify-center py-8 space-y-6 text-center">
-            <div className="space-y-1">
-              <div className="text-xs font-semibold uppercase tracking-wider text-gray-400">Active Shift duration</div>
-              <div className="text-4xl font-mono font-bold text-white tracking-widest">{shiftHoursText}</div>
+          <div className="timecard-hero space-y-5">
+            <div>
+              <div className="timecard-hero__label">Active Shift Duration</div>
+              <div className="timecard-hero__timer">{shiftHoursText}</div>
             </div>
 
             {!isClockedIn ? (
               <button
                 type="button"
                 onClick={async () => {
-                  if (!configDb) return;
+                  if (!configDb || !currentUser.technicianId) return;
                   if (!isOnSite) {
-                    showTemporaryMessage('error', 'Cannot clock in: you are not within the shop boundary.');
+                    showTemporaryMessage('error', 'Cannot clock in: you must be within 100m of the shop.');
                     return;
                   }
                   const newShift = {
@@ -4168,15 +4427,11 @@ export default function App() {
                   await saveConfig(updated);
                   setIsClockedIn(true);
                   setActiveShift(newShift);
-                  setOutOfBoundsCount(0);
+                  setGeofenceExitAt(null);
                   showTemporaryMessage('success', 'Shift started! Clocked in successfully.');
                 }}
                 disabled={!isOnSite}
-                className={`w-full py-4 rounded-xl font-bold transition-all text-sm flex items-center justify-center gap-2 ${
-                  isOnSite 
-                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20 cursor-pointer' 
-                    : 'bg-slate-850 text-gray-500 border border-slate-800 cursor-not-allowed'
-                }`}
+                className="btn-clock-in"
               >
                 <Clock className="w-5 h-5" />
                 {isOnSite ? 'Clock In Now' : 'Must Be On-Site to Clock In'}
@@ -4189,25 +4444,17 @@ export default function App() {
                   const clockOutTime = new Date().toISOString();
                   const updatedTimecards = configDb.timecards.map((tc: any) => {
                     if (tc.id === activeShift.id) {
-                      return {
-                        ...tc,
-                        status: 'completed',
-                        clockOut: clockOutTime
-                      };
+                      return { ...tc, status: 'completed', clockOut: clockOutTime };
                     }
                     return tc;
                   });
-                  const updated = {
-                    ...configDb,
-                    timecards: updatedTimecards
-                  };
-                  await saveConfig(updated);
+                  await saveConfig({ ...configDb, timecards: updatedTimecards });
                   setIsClockedIn(false);
                   setActiveShift(null);
-                  setOutOfBoundsCount(0);
+                  setGeofenceExitAt(null);
                   showTemporaryMessage('success', 'Shift completed! Clocked out successfully.');
                 }}
-                className="w-full py-4 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl transition-all text-sm flex items-center justify-center gap-2 shadow-lg shadow-rose-600/20 cursor-pointer"
+                className="btn-clock-out"
               >
                 <LogOut className="w-5 h-5" />
                 Clock Out & End Shift
@@ -4215,42 +4462,41 @@ export default function App() {
             )}
           </div>
 
-          {/* Earnings & Stats */}
           <div className="glass-panel space-y-4">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Earnings Summary</h3>
+            <h3 className="intake-section__title" style={{ border: 'none', padding: 0, margin: 0 }}>Earnings Summary</h3>
             {(() => {
               const techProfile = configDb?.technicians.find(t => t.id === currentUser.technicianId);
               const rate = techProfile?.hourlyRate || 0;
-              
               const unpaidShifts = (configDb?.timecards || []).filter(
                 (tc: any) => tc.technicianId === currentUser.technicianId && tc.status === 'completed' && tc.payoutStatus === 'unpaid'
               );
-              
               const totalMs = unpaidShifts.reduce((acc: number, shift: any) => {
                 return acc + (Date.parse(shift.clockOut) - Date.parse(shift.clockIn));
               }, 0);
-              
               const totalHours = totalMs / 3600000;
               const earnings = totalHours * rate;
-              
+
               return (
-                <div className="grid grid-cols-2 gap-4 text-center">
-                  <div className="bg-white/5 p-3 rounded-xl border border-glass">
-                    <div className="text-[10px] text-gray-500 uppercase">Unpaid Hours</div>
-                    <div className="text-xl font-bold text-slate-100 mt-1">{totalHours.toFixed(1)} hrs</div>
+                <div className="workforce-summary">
+                  <div className="workforce-summary__card">
+                    <div className="workforce-summary__value">{totalHours.toFixed(1)}</div>
+                    <div className="workforce-summary__label">Unpaid Hours</div>
                   </div>
-                  <div className="bg-white/5 p-3 rounded-xl border border-glass">
-                    <div className="text-[10px] text-gray-500 uppercase">Pending Earnings</div>
-                    <div className="text-xl font-bold text-emerald-400 mt-1">${earnings.toFixed(2)}</div>
+                  <div className="workforce-summary__card">
+                    <div className="workforce-summary__value">${earnings.toFixed(0)}</div>
+                    <div className="workforce-summary__label">Pending Pay</div>
+                  </div>
+                  <div className="workforce-summary__card">
+                    <div className="workforce-summary__value">${rate}</div>
+                    <div className="workforce-summary__label">Hourly Rate</div>
                   </div>
                 </div>
               );
             })()}
           </div>
 
-          {/* Logs Table */}
           <div className="glass-panel space-y-4 flex-1 overflow-hidden flex flex-col">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">My Shift History</h3>
+            <h3 className="intake-section__title" style={{ border: 'none', padding: 0, margin: 0 }}>My Shift History</h3>
             <div className="flex-1 overflow-y-auto space-y-2.5 max-h-[220px]">
               {(() => {
                 const myShifts = (configDb?.timecards || []).filter(
@@ -4258,42 +4504,84 @@ export default function App() {
                 ).sort((a: any, b: any) => Date.parse(b.clockIn) - Date.parse(a.clockIn));
 
                 if (myShifts.length === 0) {
-                  return <div className="text-center py-6 text-xs text-gray-500">No shift history found.</div>;
+                  return <div className="workforce-empty">No shift history yet.</div>;
                 }
 
                 return myShifts.map((shift: any) => {
                   const inDate = new Date(shift.clockIn);
-                  const hoursWorked = shift.clockOut 
+                  const hoursWorked = shift.clockOut
                     ? ((Date.parse(shift.clockOut) - Date.parse(shift.clockIn)) / 3600000).toFixed(2)
                     : 'Active';
 
                   return (
-                    <div key={shift.id} className="bg-white/5 p-3 rounded-xl border border-glass flex justify-between items-center text-xs">
-                      <div className="space-y-1">
-                        <div className="font-semibold text-slate-200">{inDate.toLocaleDateString()}</div>
-                        <div className="text-[10px] text-gray-500">
-                          {inDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {
-                            shift.clockOut 
-                              ? new Date(shift.clockOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                              : 'Now'
-                          }
+                    <div key={shift.id} className="workforce-worker text-xs">
+                      <div>
+                        <div className="workforce-worker__name">{inDate.toLocaleDateString()}</div>
+                        <div className="workforce-worker__meta">
+                          {inDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} –{' '}
+                          {shift.clockOut
+                            ? new Date(shift.clockOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                            : 'Now'}
+                          {shift.notes ? ` · ${shift.notes}` : ''}
                         </div>
                       </div>
-                      <div className="text-right space-y-1">
-                        <span className="font-bold text-slate-100">{hoursWorked} hrs</span>
-                        <div>
-                          {shift.payoutStatus === 'paid' ? (
-                            <span className="text-[9px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">Paid</span>
-                          ) : shift.status === 'active' ? (
-                            <span className="text-[9px] text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">Working</span>
-                          ) : (
-                            <span className="text-[9px] text-gray-400 bg-white/5 px-1.5 py-0.5 rounded border border-glass">Unpaid</span>
-                          )}
-                        </div>
+                      <div className="text-right">
+                        <div className="workforce-worker__timer" style={{ fontSize: '0.9375rem' }}>{hoursWorked} hrs</div>
+                        {shift.payoutStatus === 'paid' ? (
+                          <span className="badge badge-green text-xs mt-1">Paid</span>
+                        ) : shift.status === 'active' ? (
+                          <span className="badge badge-amber text-xs mt-1">Working</span>
+                        ) : (
+                          <span className="badge badge-blue text-xs mt-1">Unpaid</span>
+                        )}
                       </div>
                     </div>
                   );
                 });
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* tab: Super Admin workforce monitor — all locations */}
+      {activeTab === 'workforce' && isSuperAdminUser && (
+        <div className="space-y-6 flex-1 flex flex-col">
+          <div className="flex items-center gap-2 mb-2">
+            <button onClick={() => setActiveTab('dashboard')} className="btn-secondary py-2 px-3">
+              <ArrowLeftRight className="w-4 h-4 rotate-180 inline mr-1" /> Back
+            </button>
+            <h2>Workforce Monitor</h2>
+          </div>
+
+          {renderWorkforceMonitor({ fullPage: true })}
+
+          <div className="glass-panel space-y-3">
+            <h3 className="intake-section__title" style={{ border: 'none', padding: 0, margin: 0 }}>Recent Clock Activity</h3>
+            <div className="space-y-2 max-h-[280px] overflow-y-auto">
+              {(() => {
+                const recent = [...(configDb?.timecards || [])]
+                  .sort((a: any, b: any) => Date.parse(b.clockIn) - Date.parse(a.clockIn))
+                  .slice(0, 20);
+
+                if (recent.length === 0) {
+                  return <div className="workforce-empty">No clock activity recorded yet.</div>;
+                }
+
+                return recent.map((shift: any) => (
+                  <div key={shift.id} className="workforce-worker text-xs">
+                    <div>
+                      <div className="workforce-worker__name">{shift.technicianName}</div>
+                      <div className="workforce-worker__meta">
+                        {shift.locationName} · {new Date(shift.clockIn).toLocaleString()}
+                        {shift.clockOut ? ` → ${new Date(shift.clockOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ' → Active now'}
+                      </div>
+                    </div>
+                    <span className={`badge ${shift.status === 'active' ? 'badge-green' : 'badge-blue'} text-xs`}>
+                      {shift.status === 'active' ? 'On Clock' : 'Completed'}
+                    </span>
+                  </div>
+                ));
               })()}
             </div>
           </div>
