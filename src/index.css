@@ -1238,3 +1238,74 @@ select.intake-field {
     color: black !important;
   }
 }
+
+/* Premises geofence lock */
+.premises-lock-screen {
+  background: var(--bg-page, #f7f8fa);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.premises-lock__card {
+  max-width: 420px;
+  width: 100%;
+  background: var(--bg-card, #fff);
+  border: 1px solid var(--border-glass, #e5e7eb);
+  border-radius: 20px;
+  padding: 2rem;
+  text-align: center;
+  box-shadow: var(--shadow-premium, 0 8px 30px rgba(0,0,0,0.08));
+}
+
+.premises-lock__icon {
+  width: 4rem;
+  height: 4rem;
+  margin: 0 auto 1rem;
+  border-radius: 50%;
+  background: rgba(217, 4, 4, 0.08);
+  color: var(--primary, #d90404);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.premises-lock__title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-main, #111827);
+  margin-bottom: 0.75rem;
+}
+
+.premises-lock__text {
+  font-size: 0.875rem;
+  color: var(--text-muted, #6b7280);
+  line-height: 1.55;
+  margin-bottom: 1.25rem;
+}
+
+.premises-lock__status {
+  font-size: 0.8125rem;
+  margin-bottom: 1.25rem;
+  min-height: 1.5rem;
+}
+
+.premises-lock__checking,
+.premises-lock__distance {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-muted);
+}
+
+.premises-lock__error {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.premises-lock__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}

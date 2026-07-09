@@ -26,17 +26,23 @@ import {
   Shield,
   UserPlus,
   MapPin,
-  ChevronDown
+  ChevronDown,
+  ImageIcon,
+  Truck
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import { parseTireSticker, parseTireSidewall, parseBulkStack, estimateStackCount, inferWinterApprovedFromCatalog } from './openaiClient';
 import type { TireStickerData } from './openaiClient';
-import { offlineStorage, updateStockLevel } from './offlineStorage';
+import { offlineStorage } from './offlineStorage';
 import type { PendingTransaction } from './offlineStorage';
 import { ScanViewfinder } from './components/ScanViewfinder';
 import { WinterApprovedToggle } from './components/WinterApprovedToggle';
+import { PremisesLockOverlay } from './components/PremisesLockOverlay';
+import { ProductPhotoStudio } from './components/ProductPhotoStudio';
+import { BuildGalleryStudio } from './components/BuildGalleryStudio';
+import { GEOFENCE_RADIUS_KM, STORE_LOCATIONS, getPremisesStatus, isCatalogImageMissing } from './lib/storeLocations';
 
-type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs' | 'timecard' | 'workforce' | 'schedule' | 'payroll' | 'permissions';
+type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs' | 'timecard' | 'workforce' | 'schedule' | 'payroll' | 'permissions' | 'product-photos' | 'build-gallery';
 
 type AppUser = {
   role: 'worker' | 'manager';
@@ -46,10 +52,10 @@ type AppUser = {
   isSuperAdmin?: boolean;
 };
 
-/** Geofence radius around each shop — 100 meters */
-const GEOFENCE_RADIUS_KM = 0.1;
 /** Grace period after leaving fence before auto clock-out */
 const GEOFENCE_GRACE_MS = 15 * 60 * 1000;
+/** Local dev only: set VITE_GEOFENCE_DEV_BYPASS=true in .env to test off-site */
+const GEOFENCE_DEV_BYPASS = import.meta.env.DEV && import.meta.env.VITE_GEOFENCE_DEV_BYPASS === 'true';
 
 function formatElapsedSince(isoDate: string): string {
   const elapsedMs = Math.max(0, Date.now() - Date.parse(isoDate));
@@ -128,13 +134,7 @@ export default function App() {
   const [globalMessage, setGlobalMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Locations Catalog Cache with coordinates for geofence validation
-  const [locations] = useState<Array<{ id: string; name: string; lat: number; lng: number }>>([
-    { id: 'moncton', name: 'Tire King Moncton', lat: 46.1389, lng: -64.8488 },
-    { id: 'oromocto', name: 'Tire King Oromocto', lat: 45.8398, lng: -66.4767 },
-    { id: 'fredericton', name: 'Tire King Fredericton', lat: 45.9389, lng: -66.6656 },
-    { id: 'saint-john', name: 'Tire King Saint John', lat: 45.2889, lng: -66.0547 },
-    { id: 'otown', name: 'Tire King O\'Town Auto', lat: 45.8312, lng: -66.4923 }
-  ]);
+  const [locations] = useState(STORE_LOCATIONS.map((s) => ({ id: s.id, name: s.name, lat: s.lat, lng: s.lng })));
 
   // Core Feature State: Orders Shipping & Labels
   const [orders, setOrders] = useState<CustomerOrder[]>([]);
@@ -216,6 +216,11 @@ export default function App() {
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [distanceToShop, setDistanceToShop] = useState<number | null>(null);
   const [isOnSite, setIsOnSite] = useState(false);
+  const [isOnPremises, setIsOnPremises] = useState(GEOFENCE_DEV_BYPASS);
+  const [premisesChecking, setPremisesChecking] = useState(false);
+  const [nearestPremisesName, setNearestPremisesName] = useState('');
+  const [nearestPremisesDistanceM, setNearestPremisesDistanceM] = useState<number | null>(null);
+  const [missingPhotoCount, setMissingPhotoCount] = useState(0);
   const [geofenceExitAt, setGeofenceExitAt] = useState<number | null>(null);
   const [workforceTick, setWorkforceTick] = useState(0);
   const [workforceExpanded, setWorkforceExpanded] = useState(false);
@@ -394,20 +399,28 @@ export default function App() {
     }
   }, [configDb, currentUser]);
 
-  // Heartbeat loop for geofence validation (staff who clock in)
+  // Premises geofence — all logged-in users (entire app locks off-site)
   useEffect(() => {
-    if (currentUser?.technicianId && !isSuperAdminUser) {
-      checkGeofence();
-
-      const intervalMs = isClockedIn ? 120000 : 300000;
-      heartbeatIntervalRef.current = setInterval(() => {
-        checkGeofence();
-      }, intervalMs);
+    if (!currentUser || !activeLocation) return;
+    if (GEOFENCE_DEV_BYPASS) {
+      setIsOnPremises(true);
+      return;
     }
+    checkGeofence();
+    const intervalMs = 90000;
+    heartbeatIntervalRef.current = setInterval(() => checkGeofence(), intervalMs);
     return () => {
       if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
     };
-  }, [currentUser, activeLocation, isClockedIn]);
+  }, [currentUser, activeLocation]);
+
+  // Staff timecard geofence (active store only)
+  useEffect(() => {
+    if (!currentUser?.technicianId || isSuperAdminUser) return;
+    if (!isClockedIn) return;
+    const interval = setInterval(() => checkGeofence(), 120000);
+    return () => clearInterval(interval);
+  }, [currentUser, activeLocation, isClockedIn, isSuperAdminUser]);
 
   // Track when staff leave the geofence while clocked in
   useEffect(() => {
@@ -479,6 +492,7 @@ export default function App() {
     if (activeLocation) {
       loadPendingIncomingTransfers();
       loadPendingOrders();
+      loadMissingPhotoCount();
       if (activeTab === 'logs') {
         fetchRecentTransactions();
       }
@@ -588,23 +602,20 @@ export default function App() {
 
         if (orderErr) throw orderErr;
 
-        // 2. Subtract inventory from catalog for each item shipped
+        // 2. Log transaction and update catalog stock counts via serverless API
         for (const item of order.items) {
-          await updateStockLevel(item.sku, 'tire', activeLocation!, -item.quantity);
-        }
-
-        // 3. Log transaction
-        for (const item of order.items) {
-          await supabase.from('inventory_transactions').insert({
+          const txData = {
             sku: item.sku,
-            product_type: 'tire',
-            transaction_type: 'transfer',
+            product_type: 'tire' as const,
+            transaction_type: 'transfer' as const,
             quantity: item.quantity,
-            from_location: activeLocation,
-            status: 'completed',
+            from_location: activeLocation!,
+            to_location: 'shipped',
             employee_id: 'auto_shipping',
-            notes: `Shipped order ${order.order_number} to ${order.customer_name}. Tracking: ${trackingInput}`
-          });
+            notes: `Shipped order ${order.order_number} to ${order.customer_name}. Tracking: ${trackingInput}`,
+            status: 'completed' as const
+          };
+          await syncTransactionWithServer(txData);
         }
       } else {
         showTemporaryMessage('error', 'Shipping tracking updates require an online connection.');
@@ -627,28 +638,103 @@ export default function App() {
     setTimeout(() => setGlobalMessage(null), 5000);
   };
 
+  const loadMissingPhotoCount = async () => {
+    try {
+      const [tiresRes, wheelsRes] = await Promise.all([
+        supabase.from('tires_catalog').select('image').neq('sku', 'CONFIG-EMPLOYEES').limit(300),
+        supabase.from('wheels_catalog').select('image').limit(300),
+      ]);
+      let count = 0;
+      for (const row of tiresRes.data || []) {
+        if (isCatalogImageMissing(row.image)) count++;
+      }
+      for (const row of wheelsRes.data || []) {
+        if (isCatalogImageMissing(row.image)) count++;
+      }
+      setMissingPhotoCount(count);
+    } catch {
+      setMissingPhotoCount(0);
+    }
+  };
+
+  const requestGpsPosition = (): Promise<GeolocationPosition> =>
+    new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('Geolocation is not supported on this device.'));
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        timeout: 12000,
+        maximumAge: 15000,
+      });
+    });
+
+  const verifyPremisesAccess = async (): Promise<boolean> => {
+    if (GEOFENCE_DEV_BYPASS) return true;
+    setPremisesChecking(true);
+    try {
+      const position = await requestGpsPosition();
+      const { latitude, longitude } = position.coords;
+      setGpsCoords({ lat: latitude, lng: longitude });
+      const premises = getPremisesStatus(latitude, longitude);
+      setNearestPremisesName(premises.nearestStore.name);
+      setNearestPremisesDistanceM(Math.round(premises.distanceKm * 1000));
+      setIsOnPremises(premises.isOnPremises);
+      setGpsError(null);
+      if (!premises.isOnPremises) {
+        setAuthError(
+          `You must be on ATK premises to use this app (nearest shop: ${Math.round(premises.distanceKm * 1000)}m away).`
+        );
+        return false;
+      }
+      return true;
+    } catch (err: any) {
+      setGpsError(`GPS Error: ${err.message}`);
+      setIsOnPremises(false);
+      setAuthError('Location access is required. Enable GPS and try again.');
+      return false;
+    } finally {
+      setPremisesChecking(false);
+    }
+  };
+
   const checkGeofence = () => {
-    if (!navigator.geolocation) {
-      setGpsError('Geolocation is not supported by your browser');
+    if (GEOFENCE_DEV_BYPASS) {
+      setIsOnPremises(true);
+      setGpsError(null);
       return;
     }
+    if (!navigator.geolocation) {
+      setGpsError('Geolocation is not supported by your browser');
+      setIsOnPremises(false);
+      return;
+    }
+    setPremisesChecking(true);
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const { latitude, longitude } = position.coords;
         setGpsCoords({ lat: latitude, lng: longitude });
         setGpsError(null);
-        
-        // Find matching location coords
-        const currentLoc = locations.find(l => l.id === activeLocation);
+
+        const premises = getPremisesStatus(latitude, longitude);
+        setIsOnPremises(premises.isOnPremises);
+        setNearestPremisesName(premises.nearestStore.name);
+        setNearestPremisesDistanceM(Math.round(premises.distanceKm * 1000));
+
+        const currentLoc = locations.find((l) => l.id === activeLocation);
         if (currentLoc) {
           const dist = calculateDistance(latitude, longitude, currentLoc.lat, currentLoc.lng);
           setDistanceToShop(dist);
           setIsOnSite(dist <= GEOFENCE_RADIUS_KM);
         }
+        setPremisesChecking(false);
       },
       (err) => {
         setGpsError(`GPS Error: ${err.message}`);
+        setIsOnPremises(false);
         setIsOnSite(false);
+        setPremisesChecking(false);
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
@@ -686,7 +772,7 @@ export default function App() {
   };
 
   // Location authentication handling
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeLocation) {
       setAuthError('Please select a location.');
@@ -697,6 +783,9 @@ export default function App() {
       setAuthError('System database loading. Please try again in a moment.');
       return;
     }
+
+    const onPremises = await verifyPremisesAccess();
+    if (!onPremises) return;
 
     const selectedStoreObj = locations.find(l => l.id === activeLocation);
     const storeName = selectedStoreObj ? selectedStoreObj.name : activeLocation;
@@ -912,87 +1001,7 @@ export default function App() {
     }
   };
 
-  const base64ToBlob = (base64: string, mimeType = 'image/jpeg'): Blob => {
-    const parts = base64.split(',');
-    const byteString = atob(parts[1] || parts[0]);
-    const ab = new ArrayBuffer(byteString.length);
-    const ia = new Uint8Array(ab);
-    for (let i = 0; i < byteString.length; i++) {
-      ia[i] = byteString.charCodeAt(i);
-    }
-    return new Blob([ab], { type: mimeType });
-  };
 
-  const processProductImage = async (base64Raw: string): Promise<Blob> => {
-    const bgResponse = await fetch('/api/remove-background', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ base64Image: base64Raw })
-    });
-
-    if (!bgResponse.ok) {
-      const errJson = await bgResponse.json().catch(() => ({}));
-      throw new Error(errJson.error || `Background removal failed: ${bgResponse.status}`);
-    }
-
-    const { transparentImage } = await bgResponse.json();
-    if (!transparentImage) {
-      throw new Error("No transparent image returned from API");
-    }
-
-    return new Promise<Blob>((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = 600;
-        canvas.height = 600;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          reject(new Error("Canvas context creation failed"));
-          return;
-        }
-
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, 600, 600);
-
-        const maxDim = 510;
-        const imgWidth = img.width;
-        const imgHeight = img.height;
-        let drawWidth = imgWidth;
-        let drawHeight = imgHeight;
-
-        if (imgWidth > imgHeight) {
-          if (imgWidth > maxDim) {
-            drawWidth = maxDim;
-            drawHeight = (imgHeight * maxDim) / imgWidth;
-          }
-        } else {
-          if (imgHeight > maxDim) {
-            drawHeight = maxDim;
-            drawWidth = (imgWidth * maxDim) / imgHeight;
-          }
-        }
-
-        const x = (600 - drawWidth) / 2;
-        const y = (600 - drawHeight) / 2;
-
-        ctx.drawImage(img, x, y, drawWidth, drawHeight);
-
-        canvas.toBlob((blob) => {
-          if (blob) {
-            resolve(blob);
-          } else {
-            reject(new Error("Blob conversion failed"));
-          }
-        }, 'image/jpeg', 0.9);
-      };
-      img.onerror = () => reject(new Error("Failed to load image"));
-      img.src = transparentImage;
-    });
-  };
 
   // STEP 1: AI Label parsing (Intake)
   const processReceiveSticker = async (base64: string) => {
@@ -1102,6 +1111,27 @@ export default function App() {
     }
   };
 
+  const syncTransactionWithServer = async (tx: any, newProduct?: any) => {
+    const response = await fetch('/api/sync-transaction', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ tx, newProduct })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(errText);
+    }
+
+    const resData = await response.json();
+    if (!resData.success) {
+      throw new Error(resData.error || 'Server sync failed');
+    }
+    return resData;
+  };
+
   // Save parsed intake inventory
   const handleSaveReceive = async () => {
     if (!extractedSpecs || !quantityInput) return;
@@ -1166,93 +1196,20 @@ export default function App() {
       };
 
       if (isOnline) {
-        const table = isWheel ? 'wheels_catalog' : 'tires_catalog';
-
-        // Check if SKU exists
-        const { data: existingItem } = await supabase
-          .from(table)
-          .select('sku')
-          .eq('sku', generatedSku)
-          .maybeSingle();
-        const itemExists = !!existingItem;
-
-        let publicImageUrl = '';
-        if (!itemExists && productPhoto) {
-          showTemporaryMessage('success', 'Processing product photo: removing background...');
-          let processedBlob: Blob;
-          try {
-            processedBlob = await processProductImage(productPhoto);
-          } catch (procErr: any) {
-            console.warn("Background removal failed, uploading raw image:", procErr);
-            showTemporaryMessage('error', `AI Background removal failed (${procErr.message || procErr}). Uploading raw photo instead.`);
-            processedBlob = base64ToBlob(productPhoto);
-          }
-
-          const filePath = `${generatedSku}.jpg`;
-          try {
-            // Attempt to ensure bucket exists
-            await supabase.storage.createBucket('product-images', { public: true }).catch(() => {});
-          } catch (e) {}
-
-          const { error: uploadErr } = await supabase.storage
-            .from('product-images')
-            .upload(filePath, processedBlob, {
-              contentType: 'image/jpeg',
-              upsert: true
-            });
-
-          if (!uploadErr) {
-            const { data: urlData } = supabase.storage
-              .from('product-images')
-              .getPublicUrl(filePath);
-            publicImageUrl = urlData.publicUrl;
-          } else {
-            console.error("Storage upload failed:", uploadErr);
-          }
-        }
-
-        if (!itemExists) {
-          let catalogName = `${extractedSpecs.brand} ${extractedSpecs.model || ''}`;
-          if (isWheel) {
-            if (extractedSpecs.finish) catalogName += ` ${extractedSpecs.finish}`;
-            catalogName += ` (${extractedSpecs.size}`;
-            if (extractedSpecs.bolt_pattern) catalogName += ` PCD:${extractedSpecs.bolt_pattern}`;
-            if (extractedSpecs.offset) catalogName += ` ET:${extractedSpecs.offset}`;
-            if (extractedSpecs.center_bore) catalogName += ` CB:${extractedSpecs.center_bore}`;
-            catalogName += ')';
-          } else {
-            if (extractedSpecs.ply_rating && extractedSpecs.ply_rating !== 'N/A') {
-              catalogName += ` (${extractedSpecs.ply_rating})`;
-            }
-            if (winterApproved) {
-              catalogName += ' 3PMSF';
-            }
-          }
-
-          const insertPayload: any = {
-            sku: generatedSku,
-            brand: extractedSpecs.brand,
-            size: extractedSpecs.size,
-            name: catalogName,
-            price: isWheel ? 180 : 120,
-            stock: qty,
-            image: publicImageUrl,
-            location_counts: { [activeLocation!]: qty },
-          };
-          if (!isWheel) {
-            insertPayload.type = extractedSpecs.season || 'All-Season';
-          }
-
-          const { error: upsertErr } = await supabase.from(table).upsert(insertPayload);
-          if (upsertErr) throw upsertErr;
-        }
-
-        const { error: insertErr } = await supabase.from('inventory_transactions').insert(txData);
-        if (insertErr) throw insertErr;
-
-        if (itemExists) {
-          await updateStockLevel(generatedSku, isWheel ? 'wheel' : 'tire', activeLocation!, qty);
-        }
+        const newProductPayload = {
+          brand: extractedSpecs.brand,
+          model: extractedSpecs.model,
+          size: extractedSpecs.size,
+          finish: extractedSpecs.finish,
+          bolt_pattern: extractedSpecs.bolt_pattern,
+          offset: extractedSpecs.offset,
+          center_bore: extractedSpecs.center_bore,
+          ply_rating: extractedSpecs.ply_rating,
+          season: extractedSpecs.season,
+          winterApproved: winterApproved,
+          productPhoto: productPhoto || undefined // base64 string
+        };
+        await syncTransactionWithServer(txData, newProductPayload);
       } else {
         // Cache offline
         offlineStorage.enqueue(txData);
@@ -1343,93 +1300,20 @@ export default function App() {
         };
 
         if (isOnline) {
-          const table = isWheel ? 'wheels_catalog' : 'tires_catalog';
-
-          // Check if SKU exists
-          const { data: existingItem } = await supabase
-            .from(table)
-            .select('sku')
-            .eq('sku', generatedSku)
-            .maybeSingle();
-          const itemExists = !!existingItem;
-
-          let publicImageUrl = '';
-          const photo = bulkProductPhotos[i];
-          if (!itemExists && photo) {
-            showTemporaryMessage('success', `Processing photo for product #${i + 1}: removing background...`);
-            let processedBlob: Blob;
-            try {
-              processedBlob = await processProductImage(photo);
-            } catch (procErr: any) {
-              console.warn(`Background removal failed for product #${i + 1}, uploading raw:`, procErr);
-              showTemporaryMessage('error', `AI Background removal failed for item #${i + 1}. Uploading raw photo.`);
-              processedBlob = base64ToBlob(photo);
-            }
-
-            const filePath = `${generatedSku}.jpg`;
-            try {
-              await supabase.storage.createBucket('product-images', { public: true }).catch(() => {});
-            } catch (e) {}
-
-            const { error: uploadErr } = await supabase.storage
-              .from('product-images')
-              .upload(filePath, processedBlob, {
-                contentType: 'image/jpeg',
-                upsert: true
-              });
-
-            if (!uploadErr) {
-              const { data: urlData } = supabase.storage
-                .from('product-images')
-                .getPublicUrl(filePath);
-              publicImageUrl = urlData.publicUrl;
-            } else {
-              console.error(`Storage upload failed for product #${i + 1}:`, uploadErr);
-            }
-          }
-
-          if (!itemExists) {
-            let catalogName = `${item.brand} ${item.model || ''}`;
-            if (isWheel) {
-              if (item.finish) catalogName += ` ${item.finish}`;
-              catalogName += ` (${item.size}`;
-              if (item.bolt_pattern) catalogName += ` PCD:${item.bolt_pattern}`;
-              if (item.offset) catalogName += ` ET:${item.offset}`;
-              if (item.center_bore) catalogName += ` CB:${item.center_bore}`;
-              catalogName += ')';
-            } else {
-              if (item.ply_rating && item.ply_rating !== 'N/A') {
-                catalogName += ` (${item.ply_rating})`;
-              }
-              if (item.winter_approved || item.has_3pmsf) {
-                catalogName += ' 3PMSF';
-              }
-            }
-
-            const insertPayload: any = {
-              sku: generatedSku,
-              brand: item.brand,
-              size: item.size,
-              name: catalogName,
-              price: isWheel ? 180 : 120,
-              stock: qty,
-              image: publicImageUrl,
-              location_counts: { [activeLocation!]: qty },
-            };
-            if (!isWheel) {
-              insertPayload.type = item.season || 'All-Season';
-            }
-
-            const { error: upsertErr } = await supabase.from(table).upsert(insertPayload);
-            if (upsertErr) throw upsertErr;
-          }
-
-          const { error: insertErr } = await supabase.from('inventory_transactions').insert(txData);
-          if (insertErr) throw insertErr;
-
-          if (itemExists) {
-            await updateStockLevel(generatedSku, isWheel ? 'wheel' : 'tire', activeLocation!, qty);
-          }
+          const newProductPayload = {
+            brand: item.brand,
+            model: item.model,
+            size: item.size,
+            finish: item.finish,
+            bolt_pattern: item.bolt_pattern,
+            offset: item.offset,
+            center_bore: item.center_bore,
+            ply_rating: item.ply_rating,
+            season: item.season,
+            winterApproved: item.winter_approved || item.has_3pmsf,
+            productPhoto: bulkProductPhotos[i] || undefined // base64 string
+          };
+          await syncTransactionWithServer(txData, newProductPayload);
         } else {
           offlineStorage.enqueue(txData);
           setPendingSyncCount(offlineStorage.getQueue().length);
@@ -1490,22 +1374,27 @@ export default function App() {
 
     try {
       if (isOnline) {
-        // 1. Calculate difference and update stock counts
-        const diff = newQty - editingTransaction.quantity;
-        const targetLoc = editingTransaction.to_location || editingTransaction.from_location || activeLocation;
-        await updateStockLevel(editingTransaction.sku, editingTransaction.product_type, targetLoc, diff);
-
-        // 2. Update transaction quantity and status in Supabase
-        const { error } = await supabase
-          .from('inventory_transactions')
-          .update({
-            quantity: newQty,
-            status: 'completed', // reset status to completed if it was flagged
+        const response = await fetch('/api/edit-transaction', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            transactionId: editingTransaction.id,
+            newQuantity: newQty,
             notes: `Corrected by ${currentUser?.name || 'Manager'} on override. Original: ${editingTransaction.quantity}`
           })
-          .eq('id', editingTransaction.id);
+        });
 
-        if (error) throw error;
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(errText);
+        }
+
+        const resData = await response.json();
+        if (!resData.success) {
+          throw new Error(resData.error || 'Server edit failed');
+        }
       } else {
         // Edit offline queue
         const queue = offlineStorage.getQueue();
@@ -1544,17 +1433,23 @@ export default function App() {
 
     try {
       if (isOnline) {
-        // 1. Revert stock counts completely
-        const targetLoc = editingTransaction.to_location || editingTransaction.from_location || activeLocation;
-        await updateStockLevel(editingTransaction.sku, editingTransaction.product_type, targetLoc, -editingTransaction.quantity);
+        const response = await fetch('/api/undo-transaction', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ transactionId: editingTransaction.id })
+        });
 
-        // 2. Delete transaction from Supabase
-        const { error } = await supabase
-          .from('inventory_transactions')
-          .delete()
-          .eq('id', editingTransaction.id);
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(errText);
+        }
 
-        if (error) throw error;
+        const resData = await response.json();
+        if (!resData.success) {
+          throw new Error(resData.error || 'Server undo failed');
+        }
       } else {
         // Delete from offline queue
         offlineStorage.dequeue(editingTransaction.id);
@@ -1649,30 +1544,23 @@ export default function App() {
         return;
       }
 
-      const { data: tire, error: tireErr } = await supabase
-        .from('tires_catalog')
-        .select('sku, stock, location_counts')
-        .eq('sku', tx.sku)
-        .maybeSingle();
+      const response = await fetch('/api/undo-transaction', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ transactionId: tx.id })
+      });
 
-      if (tireErr) throw tireErr;
-
-      if (tire) {
-        const counts = { ...(tire.location_counts || {}) };
-        counts[activeLocation] = 0;
-        const newTotal = Object.values(counts).reduce<number>(
-          (sum, n) => sum + (parseInt(String(n), 10) || 0),
-          0
-        );
-
-        const { error: updateErr } = await supabase
-          .from('tires_catalog')
-          .update({ location_counts: counts, stock: newTotal })
-          .eq('sku', tx.sku);
-        if (updateErr) throw updateErr;
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(errText);
       }
 
-      await supabase.from('inventory_transactions').delete().eq('id', tx.id);
+      const resData = await response.json();
+      if (!resData.success) {
+        throw new Error(resData.error || 'Server undo failed');
+      }
 
       showTemporaryMessage(
         'success',
@@ -1724,10 +1612,7 @@ export default function App() {
       };
 
       if (isOnline) {
-        // Insert transaction
-        await supabase.from('inventory_transactions').insert(txData);
-        // Subtract stock from Moncton source immediately (items become In Transit)
-        await updateStockLevel(generatedSku, 'tire', activeLocation!, -qty);
+        await syncTransactionWithServer(txData);
       } else {
         offlineStorage.enqueue(txData);
         setPendingSyncCount(offlineStorage.getQueue().length);
@@ -1758,19 +1643,27 @@ export default function App() {
     setVerifyingTransfer(true);
     try {
       if (isOnline) {
-        // Update transaction status
-        await supabase
-          .from('inventory_transactions')
-          .update({
-            status: 'completed',
-            received_quantity: qty,
-            verified_at: new Date().toISOString(),
-            verified_by: activeLocation!
+        const response = await fetch('/api/verify-transfer', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            transactionId: selectedTransfer.id,
+            receivedQuantity: qty,
+            verifiedBy: activeLocation!
           })
-          .eq('id', selectedTransfer.id);
+        });
 
-        // Add verified stock to target destination
-        await updateStockLevel(selectedTransfer.sku, selectedTransfer.product_type, activeLocation!, qty);
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(errText);
+        }
+
+        const resData = await response.json();
+        if (!resData.success) {
+          throw new Error(resData.error || 'Server verify failed');
+        }
 
         // Discrepancy warning logic
         if (qty !== selectedTransfer.quantity) {
@@ -1983,14 +1876,38 @@ export default function App() {
             </div>
           )}
 
-          <button type="submit" className="w-full btn-primary font-semibold py-2.5 rounded-xl transition-colors">
-            {loginMode === 'admin' ? 'Enter Admin Dashboard' : 'Open Employee Portal'}
+          <button type="submit" className="w-full btn-primary font-semibold py-2.5 rounded-xl transition-colors" disabled={premisesChecking}>
+            {premisesChecking
+              ? 'Verifying on-premises GPS…'
+              : loginMode === 'admin'
+              ? 'Enter Admin Dashboard'
+              : 'Open Employee Portal'}
           </button>
+          <p className="text-center text-[11px] text-gray-500 mt-3">
+            <MapPin className="w-3 h-3 inline-block mr-1" />
+            Login requires GPS — you must be within 100m of an ATK shop. The app locks when you leave the premises.
+          </p>
         </form>
         
         <div className="text-center text-xs text-gray-500 mt-8">
           OneCMD AI Warehouse System v1.1.0
         </div>
+      </div>
+    );
+  }
+
+  // RENDER: Main Application — locked off-premises
+  if (!GEOFENCE_DEV_BYPASS && !isOnPremises) {
+    return (
+      <div className="flex-1 flex flex-col min-h-[100dvh] premises-lock-screen">
+        <PremisesLockOverlay
+          gpsError={gpsError}
+          nearestStoreName={nearestPremisesName || 'Atlantic Tire King'}
+          distanceM={nearestPremisesDistanceM}
+          checking={premisesChecking}
+          onRetryGps={checkGeofence}
+          onLogout={handleLogout}
+        />
       </div>
     );
   }
@@ -2223,6 +2140,54 @@ export default function App() {
                       <span className="badge badge-amber text-xs">{canEditInventory ? 'Audit' : 'Read-only'}</span>
                     </button>
 
+                    {/* Product Photo Studio */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!canEditInventory) {
+                          showTemporaryMessage('error', 'You do not have permission to manage catalog photos.');
+                          return;
+                        }
+                        setActiveTab('product-photos');
+                      }}
+                      className={`w-full glass-panel flex items-center justify-between p-4 border-l-4 border-l-pink-500 ${
+                        canEditInventory ? 'glass-panel-interactive cursor-pointer' : 'opacity-50 cursor-not-allowed'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-pink-500/10 flex items-center justify-center border border-pink-500/20 text-pink-400">
+                          <ImageIcon className="w-5 h-5" />
+                        </div>
+                        <div className="text-left">
+                          <span className="action-card__title">Product Photo Studio</span>
+                          <span className="action-card__sub">Add missing catalog images with AI white background</span>
+                        </div>
+                      </div>
+                      {missingPhotoCount > 0 ? (
+                        <span className="badge badge-rose text-xs">{missingPhotoCount} Need Photos</span>
+                      ) : (
+                        <span className="badge badge-green text-xs">Complete</span>
+                      )}
+                    </button>
+
+                    {/* Build Gallery Studio */}
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('build-gallery')}
+                      className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-indigo-500"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-indigo-500/10 flex items-center justify-center border border-indigo-500/20 text-indigo-400">
+                          <Truck className="w-5 h-5" />
+                        </div>
+                        <div className="text-left">
+                          <span className="action-card__title">Build Gallery Studio</span>
+                          <span className="action-card__sub">Customer truck installs → website gallery</span>
+                        </div>
+                      </div>
+                      <span className="badge badge-violet text-xs">Publish</span>
+                    </button>
+
                     {/* Transaction Logs (Rose) */}
                     <button 
                       type="button"
@@ -2335,6 +2300,46 @@ export default function App() {
                       </div>
                     </div>
                     <span className="badge badge-blue text-xs font-semibold">Transfer</span>
+                  </button>
+
+                  {/* Product Photo Studio */}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('product-photos')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-pink-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-pink-500/10 flex items-center justify-center border border-pink-500/20 text-pink-400">
+                        <ImageIcon className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">Product Photo Studio</span>
+                        <span className="action-card__sub">Missing catalog images — AI white background</span>
+                      </div>
+                    </div>
+                    {missingPhotoCount > 0 ? (
+                      <span className="badge badge-rose text-xs">{missingPhotoCount} Need Photos</span>
+                    ) : (
+                      <span className="badge badge-green text-xs">Complete</span>
+                    )}
+                  </button>
+
+                  {/* Build Gallery Studio */}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('build-gallery')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-indigo-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-indigo-500/10 flex items-center justify-center border border-indigo-500/20 text-indigo-400">
+                        <Truck className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">Build Gallery Studio</span>
+                        <span className="action-card__sub">Customer installs → website gallery</span>
+                      </div>
+                    </div>
+                    <span className="badge badge-violet text-xs">Publish</span>
                   </button>
 
                   {/* Orders to Dispatch (Emerald) */}
@@ -2630,57 +2635,16 @@ export default function App() {
                           </div>
 
                       {skuExists === false && (
-                        <div className="intake-section bg-amber-500/10 border-amber-500/20">
-                          <div className="flex items-start gap-2.5 text-amber-400">
-                            <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+                        <div className="intake-section bg-slate-50 border border-glass">
+                          <div className="flex items-start gap-2.5 text-slate-600">
+                            <ImageIcon className="w-5 h-5 flex-shrink-0 mt-0.5 text-primary" />
                             <div>
-                              <strong className="text-sm font-semibold">Please take a photo for inventory.</strong>
-                              <p className="text-xs text-gray-400 mt-0.5">This is a new product. Capturing a photo will automatically generate a professional catalog image with a clean white background.</p>
+                              <strong className="text-sm font-semibold">Photo optional during fast receive.</strong>
+                              <p className="text-xs text-gray-500 mt-0.5">
+                                Skip the photo now — add a studio catalog image later in <strong>Product Photo Studio</strong> on the dashboard.
+                              </p>
                             </div>
                           </div>
-
-                          {!productPhoto ? (
-                            <div>
-                              <input
-                                type="file"
-                                accept="image/*"
-                                capture="environment"
-                                id="single-product-photo-upload"
-                                className="hidden"
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file) {
-                                    const reader = new FileReader();
-                                    reader.onload = (evt) => {
-                                      if (evt.target?.result) {
-                                        setProductPhoto(evt.target.result as string);
-                                      }
-                                    };
-                                    reader.readAsDataURL(file);
-                                  }
-                                }}
-                              />
-                              <label
-                                htmlFor="single-product-photo-upload"
-                                className="btn-secondary py-2.5 px-4 text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer w-full"
-                              >
-                                <Camera className="w-4 h-4 text-amber-400" />
-                                Take Product Photo
-                              </label>
-                            </div>
-                          ) : (
-                            <div className="relative rounded-lg overflow-hidden border border-glass max-h-[160px] bg-glass-dark">
-                              <img src={productPhoto} alt="Product Preview" className="w-full h-full object-contain mx-auto" />
-                              <button
-                                type="button"
-                                onClick={() => setProductPhoto(null)}
-                                className="absolute top-2 right-2 bg-red-600 hover:bg-red-500 text-white rounded-lg p-1.5 transition-colors"
-                                title="Delete Photo"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          )}
                         </div>
                       )}
 
@@ -4961,6 +4925,27 @@ export default function App() {
       )}
 
       {/* tab: Manager Governance / Permissions / Add Tech */}
+      {activeTab === 'product-photos' && (
+        <ProductPhotoStudio
+          activeLocation={activeLocation!}
+          employeeName={currentUser?.name || 'Staff'}
+          gpsCoords={gpsCoords}
+          onBack={() => setActiveTab('dashboard')}
+          onCountChange={setMissingPhotoCount}
+          showMessage={showTemporaryMessage}
+        />
+      )}
+
+      {activeTab === 'build-gallery' && (
+        <BuildGalleryStudio
+          activeLocation={activeLocation!}
+          employeeName={currentUser?.name || 'Staff'}
+          gpsCoords={gpsCoords}
+          onBack={() => setActiveTab('dashboard')}
+          showMessage={showTemporaryMessage}
+        />
+      )}
+
       {activeTab === 'permissions' && currentUser?.role === 'manager' && (
         <div className="space-y-6 flex-1 flex flex-col">
           <div className="flex items-center gap-2 mb-2">
