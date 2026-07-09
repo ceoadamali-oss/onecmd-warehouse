@@ -831,6 +831,13 @@ export default function App() {
         const items = result.items || [];
         items.forEach(item => {
           if (!item.product_type) item.product_type = 'tire';
+          const lcB = (item.brand || '').trim().toLowerCase();
+          if (lcB === 'commander' || lcB === 'commander ltx') {
+            if (!item.model || !item.model.toLowerCase().includes('commander')) {
+              item.model = item.brand;
+            }
+            item.brand = '';
+          }
         });
         setBulkExtractedSpecs(items);
         
@@ -853,6 +860,15 @@ export default function App() {
       if (!parsed.product_type) {
         parsed.product_type = 'tire';
       }
+
+      const lcBrand = (parsed.brand || '').trim().toLowerCase();
+      if (lcBrand === 'commander' || lcBrand === 'commander ltx') {
+        if (!parsed.model || !parsed.model.toLowerCase().includes('commander')) {
+          parsed.model = parsed.brand;
+        }
+        parsed.brand = '';
+      }
+      
       setExtractedSpecs(parsed);
 
       const inferredWinter = inferWinterApprovedFromCatalog(parsed.brand, parsed.model, parsed);
@@ -2525,7 +2541,7 @@ export default function App() {
                               className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Bolt Pattern (PCD)</span>
                             <input
                               type="text"
@@ -2534,7 +2550,7 @@ export default function App() {
                               className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Offset (ET)</span>
                             <input
                               type="text"
@@ -2594,7 +2610,7 @@ export default function App() {
                               className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Load/Speed</span>
                             <div className="flex gap-1 mt-1.5">
                               <input
@@ -2613,7 +2629,7 @@ export default function App() {
                               />
                             </div>
                           </div>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Load Range</span>
                             <input
                               type="text"
@@ -2622,7 +2638,7 @@ export default function App() {
                               className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Season</span>
                             <select
                               value={extractedSpecs.season || 'All-Season'}
@@ -2641,7 +2657,7 @@ export default function App() {
                               <option value="All-Terrain">All-Terrain</option>
                             </select>
                           </div>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">Ply Rating</span>
                             <input
                               type="text"
@@ -2650,7 +2666,7 @@ export default function App() {
                               className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                             />
                           </div>
-                          <div>
+                          <div className="col-span-2">
                             <span className="spec-grid__label">DOT Code</span>
                             <input
                               type="text"
@@ -2936,7 +2952,7 @@ export default function App() {
                                     className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                                   />
                                 </div>
-                                <div>
+                                <div className="col-span-2">
                                   <span className="spec-grid__label">Bolt Pattern (PCD)</span>
                                   <input
                                     type="text"
@@ -2949,7 +2965,7 @@ export default function App() {
                                     className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                                   />
                                 </div>
-                                <div>
+                                <div className="col-span-2">
                                   <span className="spec-grid__label">Offset (ET)</span>
                                   <input
                                     type="text"
@@ -3029,7 +3045,7 @@ export default function App() {
                                     className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                                   />
                                 </div>
-                                <div>
+                                <div className="col-span-2">
                                   <span className="spec-grid__label">Load/Speed</span>
                                   <div className="flex gap-1 mt-1.5">
                                     <input
@@ -3056,7 +3072,7 @@ export default function App() {
                                     />
                                   </div>
                                 </div>
-                                <div>
+                                <div className="col-span-2">
                                   <span className="spec-grid__label">Load Range</span>
                                   <input
                                     type="text"
@@ -3069,7 +3085,7 @@ export default function App() {
                                     className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                                   />
                                 </div>
-                                <div>
+                                <div className="col-span-2">
                                   <span className="spec-grid__label">Season</span>
                                   <select
                                     value={item.season || 'All-Season'}
@@ -3087,7 +3103,7 @@ export default function App() {
                                     <option value="All-Terrain">All-Terrain</option>
                                   </select>
                                 </div>
-                                <div>
+                                <div className="col-span-2">
                                   <span className="spec-grid__label">Ply Rating</span>
                                   <input
                                     type="text"
@@ -3100,7 +3116,7 @@ export default function App() {
                                     className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
                                   />
                                 </div>
-                                <div>
+                                <div className="col-span-2">
                                   <span className="spec-grid__label">DOT Code</span>
                                   <input
                                     type="text"
