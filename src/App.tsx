@@ -832,8 +832,14 @@ export default function App() {
         items.forEach(item => {
           if (!item.product_type) item.product_type = 'tire';
           const lcB = (item.brand || '').trim().toLowerCase();
-          if (lcB === 'commander' || lcB === 'commander ltx') {
-            if (!item.model || !item.model.toLowerCase().includes('commander')) {
+          const modelKeywords = [
+            'commander', 'defender', 'wildpeak', 'assault', 'contra', 'maverick', 'baja',
+            'duratrac', 'ko2', 'ko3', 'grabber', 'trail grappler', 'ridge grappler', 'nomad',
+            'cleaver', 'renegade', 'vapor', 'beast', 'vector', 'covert', 'avalanche', 'ice master',
+            'snow cutter'
+          ];
+          if (modelKeywords.includes(lcB) || modelKeywords.some(kw => lcB === kw || lcB === `${kw} ltx` || lcB === `${kw} a/t` || lcB === `${kw} m/t`)) {
+            if (!item.model || !item.model.toLowerCase().includes(lcB)) {
               item.model = item.brand;
             }
             item.brand = '';
@@ -862,8 +868,14 @@ export default function App() {
       }
 
       const lcBrand = (parsed.brand || '').trim().toLowerCase();
-      if (lcBrand === 'commander' || lcBrand === 'commander ltx') {
-        if (!parsed.model || !parsed.model.toLowerCase().includes('commander')) {
+      const modelKeywords = [
+        'commander', 'defender', 'wildpeak', 'assault', 'contra', 'maverick', 'baja',
+        'duratrac', 'ko2', 'ko3', 'grabber', 'trail grappler', 'ridge grappler', 'nomad',
+        'cleaver', 'renegade', 'vapor', 'beast', 'vector', 'covert', 'avalanche', 'ice master',
+        'snow cutter'
+      ];
+      if (modelKeywords.includes(lcBrand) || modelKeywords.some(kw => lcBrand === kw || lcBrand === `${kw} ltx` || lcBrand === `${kw} a/t` || lcBrand === `${kw} m/t`)) {
+        if (!parsed.model || !parsed.model.toLowerCase().includes(lcBrand)) {
           parsed.model = parsed.brand;
         }
         parsed.brand = '';
@@ -2484,7 +2496,26 @@ export default function App() {
                         <>
                           <div className="col-span-2">
                             <span className="spec-grid__label flex items-center justify-between">
-                              <span>Brand</span>
+                              <span className="flex items-center gap-1.5">
+                                Brand
+                                {extractedSpecs.brand?.trim() && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const oldBrand = extractedSpecs.brand;
+                                      setExtractedSpecs({
+                                        ...extractedSpecs,
+                                        brand: '',
+                                        model: oldBrand
+                                      });
+                                    }}
+                                    className="text-[9px] bg-white/10 hover:bg-white/20 border border-glass text-slate-300 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1"
+                                    title="Move brand name to model and enter brand manually"
+                                  >
+                                    Move to Model ⇄
+                                  </button>
+                                )}
+                              </span>
                               {!extractedSpecs.brand?.trim() && (
                                 <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
                               )}
@@ -2573,7 +2604,26 @@ export default function App() {
                         <>
                           <div className="col-span-2">
                             <span className="spec-grid__label flex items-center justify-between">
-                              <span>Brand</span>
+                              <span className="flex items-center gap-1.5">
+                                Brand
+                                {extractedSpecs.brand?.trim() && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const oldBrand = extractedSpecs.brand;
+                                      setExtractedSpecs({
+                                        ...extractedSpecs,
+                                        brand: '',
+                                        model: oldBrand
+                                      });
+                                    }}
+                                    className="text-[9px] bg-white/10 hover:bg-white/20 border border-glass text-slate-300 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1"
+                                    title="Move brand name to model and enter brand manually"
+                                  >
+                                    Move to Model ⇄
+                                  </button>
+                                )}
+                              </span>
                               {!extractedSpecs.brand?.trim() && (
                                 <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
                               )}
@@ -2875,7 +2925,28 @@ export default function App() {
                               <>
                                 <div className="col-span-2">
                                   <span className="spec-grid__label flex items-center justify-between">
-                                    <span>Brand</span>
+                                    <span className="flex items-center gap-1.5">
+                                      Brand
+                                      {item.brand?.trim() && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const updated = [...bulkExtractedSpecs];
+                                            const oldBrand = updated[idx].brand;
+                                            updated[idx] = {
+                                              ...updated[idx],
+                                              brand: '',
+                                              model: oldBrand
+                                            };
+                                            setBulkExtractedSpecs(updated);
+                                          }}
+                                          className="text-[9px] bg-white/10 hover:bg-white/20 border border-glass text-slate-300 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1"
+                                          title="Move brand name to model and enter brand manually"
+                                        >
+                                          Move to Model ⇄
+                                        </button>
+                                      )}
+                                    </span>
                                     {!item.brand?.trim() && (
                                       <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
                                     )}
@@ -2996,7 +3067,28 @@ export default function App() {
                               <>
                                 <div className="col-span-2">
                                   <span className="spec-grid__label flex items-center justify-between">
-                                    <span>Brand</span>
+                                    <span className="flex items-center gap-1.5">
+                                      Brand
+                                      {item.brand?.trim() && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const updated = [...bulkExtractedSpecs];
+                                            const oldBrand = updated[idx].brand;
+                                            updated[idx] = {
+                                              ...updated[idx],
+                                              brand: '',
+                                              model: oldBrand
+                                            };
+                                            setBulkExtractedSpecs(updated);
+                                          }}
+                                          className="text-[9px] bg-white/10 hover:bg-white/20 border border-glass text-slate-300 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1"
+                                          title="Move brand name to model and enter brand manually"
+                                        >
+                                          Move to Model ⇄
+                                        </button>
+                                      )}
+                                    </span>
                                     {!item.brand?.trim() && (
                                       <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
                                     )}

@@ -40,10 +40,15 @@ export interface StackEstimateData {
  * Calls OpenAI GPT-4o-mini Vision to extract specs from a tire label image.
  */
 export async function parseTireSticker(base64Image: string): Promise<TireStickerData> {
-  const prompt = `You are a professional tire inventory receiving scanner. Extract the tire specifications from this tire sticker or label image.
+  const prompt = `You are a professional tire and wheel inventory receiving scanner. Extract the product specifications from this sticker or label image.
+CRITICAL BRAND RULES:
+- Do not mistake wheel or tire model/product names (such as "Commander", "Defender", "Wildpeak", "Assault", "Contra", "Maverick", "Baja", etc.) for brand names.
+- If the manufacturer's brand name is not explicitly written on the sticker or is not a known brand (e.g. Michelin, BFGoodrich, Toyo, Fuel, Moto Metal, Niche, Rotiform, KMC, XD, American Racing, TSW, etc.), you must set the 'brand' field to "" (empty string) or "N/A".
+- Never guess the model name as the brand.
+
 Return a clean JSON object with the following fields:
 {
-  "brand": string (e.g., "Centara", capitalized),
+  "brand": string (e.g., "Centara", capitalized, or "" if not explicitly found),
   "model": string (e.g., "Snow Cutter", capitalized),
   "size": string (e.g., "205/55R16" or "33x12.50R20"),
   "load_index": string (e.g., "91" or "94"),
@@ -116,9 +121,14 @@ Do not return any markdown formatting or extra text. Just the JSON object.`;
 export async function parseTireSidewall(base64Image: string): Promise<TireStickerData> {
   const prompt = `You are a professional tire technician scanner. Analyze the attached image of a tire's rubber sidewall. 
 Extract the tire specifications embossed directly into the black rubber. The text can be dusty, dirty, or low-contrast, so scan very carefully.
+CRITICAL BRAND RULES:
+- Do not mistake wheel or tire model/product names (such as "Commander", "Defender", "Wildpeak", "Assault", "Contra", "Maverick", "Baja", etc.) for brand names.
+- If the manufacturer's brand name is not explicitly written on the sticker or is not a known brand (e.g. Michelin, BFGoodrich, Toyo, Fuel, Moto Metal, Niche, Rotiform, KMC, XD, American Racing, TSW, etc.), you must set the 'brand' field to "" (empty string) or "N/A".
+- Never guess the model name as the brand.
+
 Return a clean JSON object with the following fields:
 {
-  "brand": string (e.g. "Michelin", capitalized),
+  "brand": string (e.g. "Michelin", capitalized, or "" if not explicitly found),
   "model": string (e.g. "Defender LTX", capitalized),
   "size": string (e.g. "275/65R18" or "35x12.50R20"),
   "load_index": string (e.g. "116"),
