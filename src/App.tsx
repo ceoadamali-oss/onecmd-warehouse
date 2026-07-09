@@ -192,6 +192,7 @@ export default function App() {
   const [newTechEmail, setNewTechEmail] = useState('');
   const [newTechSpecialty, setNewTechSpecialty] = useState('');
   const [newTechLocation, setNewTechLocation] = useState('moncton');
+  const [newTechHourlyRate, setNewTechHourlyRate] = useState('20.00');
   const [creatingTech, setCreatingTech] = useState(false);
   const [inviteSentMsg, setInviteSentMsg] = useState('');
 
@@ -4467,12 +4468,12 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-1">
                   <label className="block text-gray-500 font-bold uppercase">Specialty</label>
                   <input 
                     type="text" 
-                    placeholder="e.g. Alignment specialist"
+                    placeholder="e.g. Alignment"
                     value={newTechSpecialty}
                     onChange={e => setNewTechSpecialty(e.target.value)}
                     className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
@@ -4489,6 +4490,17 @@ export default function App() {
                       <option key={loc.id} value={loc.id}>{loc.name}</option>
                     ))}
                   </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-gray-500 font-bold uppercase">Hourly Rate ($/hr)</label>
+                  <input 
+                    type="number" 
+                    step="0.01"
+                    placeholder="20.00"
+                    value={newTechHourlyRate}
+                    onChange={e => setNewTechHourlyRate(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
+                  />
                 </div>
               </div>
 
@@ -4510,7 +4522,7 @@ export default function App() {
                       pin: generatedPin,
                       specialty: newTechSpecialty || 'General Technician',
                       locationId: newTechLocation,
-                      hourlyRate: 20.00,
+                      hourlyRate: parseFloat(newTechHourlyRate) || 20.00,
                       canEditInventory: false,
                       canPrintLabels: false,
                       canShipOrders: true
@@ -4556,6 +4568,7 @@ export default function App() {
                     setNewTechName('');
                     setNewTechEmail('');
                     setNewTechSpecialty('');
+                    setNewTechHourlyRate('20.00');
                   } catch (e: any) {
                     showTemporaryMessage('error', `Registration failed: ${e.message}`);
                   } finally {
@@ -4588,10 +4601,93 @@ export default function App() {
                 <div key={tech.id} className="bg-white/5 p-4 rounded-xl border border-glass space-y-3.5 text-xs">
                   <div className="flex justify-between items-center border-b border-glass/40 pb-2">
                     <strong className="text-slate-200 text-sm">{tech.name}</strong>
-                    <span className="text-[10px] text-gray-500 font-mono font-bold">PIN: {tech.pin}</span>
+                    <span className="text-[10px] text-gray-500 font-mono">Specialty: {tech.specialty}</span>
                   </div>
 
-                  <div className="space-y-3">
+                  {/* Inline profile adjustment forms */}
+                  <div className="grid grid-cols-2 gap-3.5 text-xs bg-slate-950/40 p-3 rounded-xl border border-slate-900/60 my-2">
+                    <div className="space-y-1">
+                      <label className="text-gray-500 block uppercase font-bold text-[9px]">Hourly Rate ($/hr)</label>
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        defaultValue={tech.hourlyRate || 20.00}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (!isNaN(val) && val > 0) {
+                            tech.hourlyRate = val;
+                          }
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-1.5 px-2.5"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-gray-500 block uppercase font-bold text-[9px]">Security PIN</label>
+                      <input 
+                        type="text" 
+                        maxLength={4}
+                        defaultValue={tech.pin}
+                        onChange={(e) => {
+                          const val = e.target.value.replace(/\D/g, '');
+                          if (val.length === 4) {
+                            tech.pin = val;
+                          }
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-1.5 px-2.5 font-mono"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-gray-500 block uppercase font-bold text-[9px]">Specialty</label>
+                      <input 
+                        type="text" 
+                        defaultValue={tech.specialty}
+                        onChange={(e) => {
+                          tech.specialty = e.target.value;
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-1.5 px-2.5"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-gray-500 block uppercase font-bold text-[9px]">Home Location</label>
+                      <select 
+                        defaultValue={tech.locationId}
+                        onChange={(e) => {
+                          tech.locationId = e.target.value;
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-1.5 px-2.5"
+                      >
+                        {locations.map(loc => (
+                          <option key={loc.id} value={loc.id}>{loc.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!configDb) return;
+                        const updated = {
+                          ...configDb,
+                          technicians: configDb.technicians.map(t => t.id === tech.id ? { 
+                            ...t, 
+                            hourlyRate: tech.hourlyRate,
+                            pin: tech.pin,
+                            specialty: tech.specialty,
+                            locationId: tech.locationId
+                          } : t)
+                        };
+                        await saveConfig(updated);
+                        showTemporaryMessage('success', `Successfully updated profile details for ${tech.name}.`);
+                      }}
+                      className="btn-primary py-1.5 px-3 text-xs bg-violet-600 hover:bg-violet-500 text-white rounded-lg cursor-pointer"
+                    >
+                      Update Profile Info
+                    </button>
+                  </div>
+
+                  <div className="space-y-3 pt-2">
                     <label className="flex items-center gap-3 cursor-pointer">
                       <input 
                         type="checkbox" 
