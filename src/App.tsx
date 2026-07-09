@@ -18,7 +18,14 @@ import {
   Check,
   AlertCircle,
   Printer,
-  X
+  X,
+  Trash2,
+  Clock,
+  Calendar,
+  DollarSign,
+  Shield,
+  UserPlus,
+  MapPin
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import { parseTireSticker, parseTireSidewall, parseBulkStack, estimateStackCount, inferWinterApprovedFromCatalog } from './openaiClient';
@@ -28,7 +35,7 @@ import type { PendingTransaction } from './offlineStorage';
 import { ScanViewfinder } from './components/ScanViewfinder';
 import { WinterApprovedToggle } from './components/WinterApprovedToggle';
 
-type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs';
+type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs' | 'timecard' | 'schedule' | 'payroll' | 'permissions';
 
 export interface CustomerOrder {
   id: string;
@@ -44,24 +51,18 @@ export interface CustomerOrder {
   created_at: string;
 }
 
-export const STAFF_PINS: Record<string, { role: 'worker' | 'manager'; name: string; location: string }> = {
-  // Moncton
-  '1111': { role: 'worker', name: 'Moncton Worker 1', location: 'moncton' },
-  '1112': { role: 'worker', name: 'Moncton Worker 2', location: 'moncton' },
-  '9999': { role: 'manager', name: 'Moncton Manager', location: 'moncton' },
-  // Oromocto
-  '2221': { role: 'worker', name: 'Oromocto Worker 1', location: 'oromocto' },
-  '2222': { role: 'worker', name: 'Oromocto Worker 2', location: 'oromocto' },
-  '8888': { role: 'manager', name: 'Oromocto Manager', location: 'oromocto' },
-  // Saint John
-  '3331': { role: 'worker', name: 'Saint John Worker 1', location: 'saint-john' },
-  '3332': { role: 'worker', name: 'Saint John Worker 2', location: 'saint-john' },
-  '7777': { role: 'manager', name: 'Saint John Manager', location: 'saint-john' },
-  // Fredericton
-  '4441': { role: 'worker', name: 'Fredericton Worker 1', location: 'fredericton' },
-  '4442': { role: 'worker', name: 'Fredericton Worker 2', location: 'fredericton' },
-  '6666': { role: 'manager', name: 'Fredericton Manager', location: 'fredericton' }
-};
+// Helper to calculate distance in km (Haversine formula)
+function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
 
 export const formatSku = (brand: string, size: string, model: string) => {
   const cleanBrand = brand.trim().toUpperCase().replace(/[^A-Z0-9]/g, '-').replace(/-+/g, '-');
@@ -81,7 +82,8 @@ export default function App() {
   const [activeLocation, setActiveLocation] = useState<string | null>(null);
   const [locationName, setLocationName] = useState<string>('');
   const [pinInput, setPinInput] = useState<string>('');
-  const [currentUser, setCurrentUser] = useState<{ role: 'worker' | 'manager'; name: string; location: string } | null>(() => {
+  const [loginMode, setLoginMode] = useState<'technician' | 'admin'>('technician');
+  const [currentUser, setCurrentUser] = useState<{ role: 'worker' | 'manager'; name: string; location: string; technicianId?: string } | null>(() => {
     const saved = localStorage.getItem('onecmd_current_user');
     return saved ? JSON.parse(saved) : null;
   });
@@ -94,14 +96,13 @@ export default function App() {
   const [syncing, setSyncing] = useState<boolean>(false);
   const [globalMessage, setGlobalMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Locations Catalog Cache
-  const [locations] = useState<Array<{ id: string; name: string }>>([
-    { id: 'moncton', name: 'Moncton Warehouse' },
-    { id: 'oromocto', name: 'Oromocto Warehouse' },
-    { id: 'halifax', name: 'Halifax Hub' },
-    { id: 'fredericton', name: 'Fredericton Outlet' },
-    { id: 'saint-john', name: 'Saint John Hub' },
-    { id: 'otown-auto', name: 'O-Town Auto' }
+  // Locations Catalog Cache with coordinates for geofence validation
+  const [locations] = useState<Array<{ id: string; name: string; lat: number; lng: number }>>([
+    { id: 'moncton', name: 'Tarek King Mountain', lat: 46.1389, lng: -64.8488 },
+    { id: 'oromocto', name: 'Tarek King Oromocto', lat: 45.8398, lng: -66.4767 },
+    { id: 'fredericton', name: 'Fredericton Outlet', lat: 45.9389, lng: -66.6656 },
+    { id: 'saint-john', name: 'Tarek King St. John', lat: 45.2889, lng: -66.0547 },
+    { id: 'otown', name: 'O\'Town Auto', lat: 45.8312, lng: -66.4923 }
   ]);
 
   // Core Feature State: Orders Shipping & Labels
@@ -125,6 +126,8 @@ export default function App() {
   const [receiveScanError, setReceiveScanError] = useState<string>('');
   const [undoingIntake, setUndoingIntake] = useState<boolean>(false);
   const [scanMode, setScanMode] = useState<'sticker' | 'sidewall' | 'bulk'>('sticker');
+  const [productPhoto, setProductPhoto] = useState<string | null>(null);
+  const [bulkProductPhotos, setBulkProductPhotos] = useState<{ [key: number]: string }>({});
 
   // Core Feature State: Transaction History Logs & Corrections
   const [recentTransactions, setRecentTransactions] = useState<PendingTransaction[]>([]);
@@ -171,14 +174,124 @@ export default function App() {
     organizationScore: number;
   } | null>(null);
 
+  // Timecard, Schedule & Payroll specific states
+  const [configDb, setConfigDb] = useState<{ technicians: any[]; timecards: any[]; schedules: any[] } | null>(null);
+
+  // Geofence & Shift states
+  const [isClockedIn, setIsClockedIn] = useState(false);
+  const [activeShift, setActiveShift] = useState<any | null>(null);
+  const [shiftHoursText, setShiftHoursText] = useState('00:00:00');
+  const [gpsCoords, setGpsCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [gpsError, setGpsError] = useState<string | null>(null);
+  const [distanceToShop, setDistanceToShop] = useState<number | null>(null);
+  const [isOnSite, setIsOnSite] = useState(false);
+  const [outOfBoundsCount, setOutOfBoundsCount] = useState(0);
+
+  // Manager Payroll / Tech Management states
+  const [newTechName, setNewTechName] = useState('');
+  const [newTechEmail, setNewTechEmail] = useState('');
+  const [newTechSpecialty, setNewTechSpecialty] = useState('');
+  const [newTechLocation, setNewTechLocation] = useState('moncton');
+  const [creatingTech, setCreatingTech] = useState(false);
+  const [inviteSentMsg, setInviteSentMsg] = useState('');
+
+  // Manager Weekly Schedule states
+  const [rosterDaysQuotas, setRosterDaysQuotas] = useState<Record<string, number>>({});
+  const [generatingRoster, setGeneratingRoster] = useState(false);
+  const [generatedRosterPreview, setGeneratedRosterPreview] = useState<any[] | null>(null);
+  const [scheduleWeekStart, setScheduleWeekStart] = useState('');
+
   // File Inputs references for opening camera
   const transferFileRef = useRef<HTMLInputElement>(null);
   const verifyFileRef = useRef<HTMLInputElement>(null);
   const estimatorFileRef = useRef<HTMLInputElement>(null);
   const auditFileRef = useRef<HTMLInputElement>(null);
 
+  const timerRef = useRef<any>(null);
+  const heartbeatIntervalRef = useRef<any>(null);
+
+  // Load / Initialize system config from Supabase
+  const loadConfig = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('tires_catalog')
+        .select('*')
+        .eq('sku', 'CONFIG-EMPLOYEES')
+        .maybeSingle();
+
+      if (error) throw error;
+
+      if (!data) {
+        // Initialize default config if first time run
+        const initialConfig = {
+          technicians: [
+            {
+              id: 'tech-ali',
+              name: 'Ali Baba',
+              pin: '1234',
+              email: 'ceoadamali@gmail.com',
+              specialty: 'Tires & Alignment',
+              hourlyRate: 25,
+              locationId: 'moncton',
+              canEditInventory: true,
+              canPrintLabels: true,
+              canShipOrders: true
+            },
+            {
+              id: 'tech-dave',
+              name: 'Dave Smith',
+              pin: '5678',
+              email: 'dave@atlantictireking.com',
+              specialty: 'Warehouse Logistics',
+              hourlyRate: 20,
+              locationId: 'oromocto',
+              canEditInventory: true,
+              canPrintLabels: false,
+              canShipOrders: true
+            }
+          ],
+          timecards: [],
+          schedules: []
+        };
+
+        await supabase.from('tires_catalog').insert({
+          sku: 'CONFIG-EMPLOYEES',
+          brand: 'SYSTEM',
+          size: 'N/A',
+          name: 'System Employee Configuration Database',
+          price: 0,
+          stock: 0,
+          type: 'System',
+          image: '',
+          location_counts: initialConfig
+        });
+
+        setConfigDb(initialConfig);
+      } else {
+        setConfigDb(data.location_counts || { technicians: [], timecards: [], schedules: [] });
+      }
+    } catch (e: any) {
+      console.error('Failed to load system configuration:', e);
+    }
+  };
+
+  const saveConfig = async (updatedConfig: any) => {
+    try {
+      setConfigDb(updatedConfig);
+      const { error } = await supabase
+        .from('tires_catalog')
+        .update({ location_counts: updatedConfig })
+        .eq('sku', 'CONFIG-EMPLOYEES');
+      if (error) throw error;
+    } catch (e: any) {
+      showTemporaryMessage('error', `Failed to sync database: ${e.message}`);
+    }
+  };
+
   // Monitor network status & offline queue
   useEffect(() => {
+    loadConfig();
+
     const handleOnline = () => {
       setIsOnline(true);
       showTemporaryMessage('success', 'Network connection restored. Synced ready.');
@@ -207,6 +320,74 @@ export default function App() {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
+
+  // Sync active shift from configDb once loaded and currentUser is set
+  useEffect(() => {
+    if (configDb && currentUser && currentUser.role === 'worker') {
+      const active = configDb.timecards.find(
+        (tc: any) => tc.technicianId === currentUser.technicianId && tc.status === 'active'
+      );
+      if (active) {
+        setIsClockedIn(true);
+        setActiveShift(active);
+      } else {
+        setIsClockedIn(false);
+        setActiveShift(null);
+      }
+    }
+  }, [configDb, currentUser]);
+
+  // Heartbeat loop for geofence validation
+  useEffect(() => {
+    if (currentUser && currentUser.role === 'worker') {
+      checkGeofence();
+      
+      // Start 5-minute battery-optimized heartbeat checks
+      heartbeatIntervalRef.current = setInterval(() => {
+        checkGeofence();
+      }, 300000);
+    }
+    return () => {
+      if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+    };
+  }, [currentUser, activeLocation]);
+
+  // Handle out of bounds grace period checks
+  useEffect(() => {
+    if (isClockedIn && distanceToShop !== null) {
+      const isBreaching = distanceToShop > 0.15; // 150m boundary limit
+      if (isBreaching) {
+        const newCount = outOfBoundsCount + 1;
+        setOutOfBoundsCount(newCount);
+        if (newCount >= 3) {
+          triggerAutoClockOut();
+        }
+      } else {
+        setOutOfBoundsCount(0);
+      }
+    }
+  }, [distanceToShop, isClockedIn]);
+
+  // Shift Timer Tick
+  useEffect(() => {
+    if (isClockedIn && activeShift) {
+      timerRef.current = setInterval(() => {
+        const elapsedMs = Date.now() - Date.parse(activeShift.clockIn);
+        const secs = Math.floor((elapsedMs / 1000) % 60);
+        const mins = Math.floor((elapsedMs / 60000) % 60);
+        const hrs = Math.floor(elapsedMs / 3600000);
+        setShiftHoursText(
+          `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+        );
+      }, 1000);
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+      setShiftHoursText('00:00:00');
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [isClockedIn, activeShift]);
 
   // Poll pending sync count changes
   useEffect(() => {
@@ -347,6 +528,66 @@ export default function App() {
     setTimeout(() => setGlobalMessage(null), 5000);
   };
 
+  const checkGeofence = () => {
+    if (!navigator.geolocation) {
+      setGpsError('Geolocation is not supported by your browser');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        setGpsCoords({ lat: latitude, lng: longitude });
+        setGpsError(null);
+        
+        // Find matching location coords
+        const currentLoc = locations.find(l => l.id === activeLocation);
+        if (currentLoc) {
+          const dist = calculateDistance(latitude, longitude, currentLoc.lat, currentLoc.lng);
+          setDistanceToShop(dist);
+          const onSite = dist <= 0.15; // 150m boundary
+          setIsOnSite(onSite);
+        }
+      },
+      (err) => {
+        setGpsError(`GPS Error: ${err.message}`);
+        setIsOnSite(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  const triggerAutoClockOut = async () => {
+    if (!isClockedIn || !activeShift || !configDb) return;
+    try {
+      // Auto clock-out uses the timestamp from 15 minutes ago (3 heartbeat counts * 5 minutes)
+      const clockOutTime = new Date(Date.now() - 900000).toISOString();
+      const updatedTimecards = configDb.timecards.map((tc: any) => {
+        if (tc.id === activeShift.id) {
+          return {
+            ...tc,
+            status: 'completed',
+            clockOut: clockOutTime,
+            notes: 'Auto clock-out: geofence breach exceeded 15 minutes grace period'
+          };
+        }
+        return tc;
+      });
+
+      const updated = {
+        ...configDb,
+        timecards: updatedTimecards
+      };
+
+      await saveConfig(updated);
+      setIsClockedIn(false);
+      setActiveShift(null);
+      setOutOfBoundsCount(0);
+      showTemporaryMessage('error', 'Auto clock-out: Geofence boundary exceeded for 15+ minutes.');
+    } catch (e: any) {
+      console.error('Failed auto clock-out:', e);
+    }
+  };
+
   // Location authentication handling
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -355,22 +596,53 @@ export default function App() {
       return;
     }
 
-    const employee = STAFF_PINS[pinInput];
-    if (employee && employee.location === activeLocation) {
-      const selected = locations.find(l => l.id === activeLocation);
-      const name = selected ? selected.name : activeLocation;
-      setLocationName(name);
-      setCurrentUser(employee);
-      
-      localStorage.setItem('onecmd_active_location', activeLocation);
-      localStorage.setItem('onecmd_active_location_name', name);
-      localStorage.setItem('onecmd_current_user', JSON.stringify(employee));
-      
-      setPinInput('');
-      setAuthError('');
-      showTemporaryMessage('success', `Welcome back, ${employee.name}! Logged in at ${name}.`);
+    if (!configDb) {
+      setAuthError('System database loading. Please try again in a moment.');
+      return;
+    }
+
+    const selectedStoreObj = locations.find(l => l.id === activeLocation);
+    const storeName = selectedStoreObj ? selectedStoreObj.name : activeLocation;
+
+    if (loginMode === 'admin') {
+      if (pinInput === 'adam2026') {
+        const mgrUser = {
+          role: 'manager' as const,
+          name: 'Adam Ali (Super Admin)',
+          location: activeLocation
+        };
+        setCurrentUser(mgrUser);
+        setLocationName(storeName);
+        localStorage.setItem('onecmd_active_location', activeLocation);
+        localStorage.setItem('onecmd_active_location_name', storeName);
+        localStorage.setItem('onecmd_current_user', JSON.stringify(mgrUser));
+        setPinInput('');
+        setAuthError('');
+        showTemporaryMessage('success', 'Logged in successfully as Super Admin.');
+      } else {
+        setAuthError('Invalid Admin Password. Please try again.');
+      }
     } else {
-      setAuthError('Invalid 4-digit Employee PIN for this location. Please try again.');
+      // Find technician with matching PIN
+      const techUser = configDb.technicians.find((t: any) => t.pin === pinInput);
+      if (techUser) {
+        const workerUser = {
+          role: 'worker' as const,
+          name: techUser.name,
+          location: activeLocation,
+          technicianId: techUser.id
+        };
+        setCurrentUser(workerUser);
+        setLocationName(storeName);
+        localStorage.setItem('onecmd_active_location', activeLocation);
+        localStorage.setItem('onecmd_active_location_name', storeName);
+        localStorage.setItem('onecmd_current_user', JSON.stringify(workerUser));
+        setPinInput('');
+        setAuthError('');
+        showTemporaryMessage('success', `Welcome back, ${techUser.name}! Logged in at ${storeName}.`);
+      } else {
+        setAuthError('Invalid 4-digit PIN code. Please try again.');
+      }
     }
   };
 
@@ -382,6 +654,9 @@ export default function App() {
     setLocationName('');
     setCurrentUser(null);
     setActiveTab('dashboard');
+    setIsClockedIn(false);
+    setActiveShift(null);
+    if (timerRef.current) clearInterval(timerRef.current);
   };
 
   // Trigger sync of offline items
@@ -431,11 +706,97 @@ export default function App() {
     }
   };
 
+  const base64ToBlob = (base64: string, mimeType = 'image/jpeg'): Blob => {
+    const parts = base64.split(',');
+    const byteString = atob(parts[1] || parts[0]);
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) {
+      ia[i] = byteString.charCodeAt(i);
+    }
+    return new Blob([ab], { type: mimeType });
+  };
+
+  const processProductImage = async (base64Raw: string): Promise<Blob> => {
+    const bgResponse = await fetch('/api/remove-background', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ base64Image: base64Raw })
+    });
+
+    if (!bgResponse.ok) {
+      const errJson = await bgResponse.json().catch(() => ({}));
+      throw new Error(errJson.error || `Background removal failed: ${bgResponse.status}`);
+    }
+
+    const { transparentImage } = await bgResponse.json();
+    if (!transparentImage) {
+      throw new Error("No transparent image returned from API");
+    }
+
+    return new Promise<Blob>((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 600;
+        canvas.height = 600;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error("Canvas context creation failed"));
+          return;
+        }
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, 600, 600);
+
+        const maxDim = 510;
+        const imgWidth = img.width;
+        const imgHeight = img.height;
+        let drawWidth = imgWidth;
+        let drawHeight = imgHeight;
+
+        if (imgWidth > imgHeight) {
+          if (imgWidth > maxDim) {
+            drawWidth = maxDim;
+            drawHeight = (imgHeight * maxDim) / imgWidth;
+          }
+        } else {
+          if (imgHeight > maxDim) {
+            drawHeight = maxDim;
+            drawWidth = (imgWidth * maxDim) / imgHeight;
+          }
+        }
+
+        const x = (600 - drawWidth) / 2;
+        const y = (600 - drawHeight) / 2;
+
+        ctx.drawImage(img, x, y, drawWidth, drawHeight);
+
+        canvas.toBlob((blob) => {
+          if (blob) {
+            resolve(blob);
+          } else {
+            reject(new Error("Blob conversion failed"));
+          }
+        }, 'image/jpeg', 0.9);
+      };
+      img.onerror = () => reject(new Error("Failed to load image"));
+      img.src = transparentImage;
+    });
+  };
+
   // STEP 1: AI Label parsing (Intake)
   const processReceiveSticker = async (base64: string) => {
     setReceivePhoto(base64);
     setExtracting(true);
     setExtractedSpecs(null);
+    setBulkExtractedSpecs(null);
+    setBulkQuantities({});
+    setProductPhoto(null);
+    setBulkProductPhotos({});
     setSkuExists(null);
     setReceiveScanError('');
     setWinterApproved(false);
@@ -571,6 +932,41 @@ export default function App() {
           .maybeSingle();
         const itemExists = !!existingItem;
 
+        let publicImageUrl = '';
+        if (!itemExists && productPhoto) {
+          showTemporaryMessage('success', 'Processing product photo: removing background...');
+          let processedBlob: Blob;
+          try {
+            processedBlob = await processProductImage(productPhoto);
+          } catch (procErr: any) {
+            console.warn("Background removal failed, uploading raw image:", procErr);
+            showTemporaryMessage('error', `AI Background removal failed (${procErr.message || procErr}). Uploading raw photo instead.`);
+            processedBlob = base64ToBlob(productPhoto);
+          }
+
+          const filePath = `${generatedSku}.jpg`;
+          try {
+            // Attempt to ensure bucket exists
+            await supabase.storage.createBucket('product-images', { public: true }).catch(() => {});
+          } catch (e) {}
+
+          const { error: uploadErr } = await supabase.storage
+            .from('product-images')
+            .upload(filePath, processedBlob, {
+              contentType: 'image/jpeg',
+              upsert: true
+            });
+
+          if (!uploadErr) {
+            const { data: urlData } = supabase.storage
+              .from('product-images')
+              .getPublicUrl(filePath);
+            publicImageUrl = urlData.publicUrl;
+          } else {
+            console.error("Storage upload failed:", uploadErr);
+          }
+        }
+
         if (!itemExists) {
           let catalogName = `${extractedSpecs.brand} ${extractedSpecs.model || ''}`;
           if (isWheel) {
@@ -596,7 +992,7 @@ export default function App() {
             name: catalogName,
             price: isWheel ? 180 : 120,
             stock: 0,
-            image: '',
+            image: publicImageUrl,
             location_counts: {}
           };
           if (!isWheel) {
@@ -628,6 +1024,7 @@ export default function App() {
       // Reset state
       setReceivePhoto(null);
       setExtractedSpecs(null);
+      setProductPhoto(null);
       setQuantityInput('');
       setWinterApproved(false);
       setWinterApprovedAiDetected(false);
@@ -712,6 +1109,41 @@ export default function App() {
             .maybeSingle();
           const itemExists = !!existingItem;
 
+          let publicImageUrl = '';
+          const photo = bulkProductPhotos[i];
+          if (!itemExists && photo) {
+            showTemporaryMessage('success', `Processing photo for product #${i + 1}: removing background...`);
+            let processedBlob: Blob;
+            try {
+              processedBlob = await processProductImage(photo);
+            } catch (procErr: any) {
+              console.warn(`Background removal failed for product #${i + 1}, uploading raw:`, procErr);
+              showTemporaryMessage('error', `AI Background removal failed for item #${i + 1}. Uploading raw photo.`);
+              processedBlob = base64ToBlob(photo);
+            }
+
+            const filePath = `${generatedSku}.jpg`;
+            try {
+              await supabase.storage.createBucket('product-images', { public: true }).catch(() => {});
+            } catch (e) {}
+
+            const { error: uploadErr } = await supabase.storage
+              .from('product-images')
+              .upload(filePath, processedBlob, {
+                contentType: 'image/jpeg',
+                upsert: true
+              });
+
+            if (!uploadErr) {
+              const { data: urlData } = supabase.storage
+                .from('product-images')
+                .getPublicUrl(filePath);
+              publicImageUrl = urlData.publicUrl;
+            } else {
+              console.error(`Storage upload failed for product #${i + 1}:`, uploadErr);
+            }
+          }
+
           if (!itemExists) {
             let catalogName = `${item.brand} ${item.model || ''}`;
             if (isWheel) {
@@ -737,7 +1169,7 @@ export default function App() {
               name: catalogName,
               price: isWheel ? 180 : 120,
               stock: 0,
-              image: '',
+              image: publicImageUrl,
               location_counts: {}
             };
             if (!isWheel) {
@@ -773,6 +1205,7 @@ export default function App() {
       setReceivePhoto(null);
       setBulkExtractedSpecs(null);
       setBulkQuantities({});
+      setBulkProductPhotos({});
       setActiveTab('dashboard');
     } catch (err: any) {
       showTemporaryMessage('error', `Failed to save bulk scan: ${err.message}`);
@@ -1237,22 +1670,22 @@ export default function App() {
   // RENDER: Login / Location Selector
   if (!activeLocation || !locationName) {
     return (
-      <div className="flex-1 flex flex-col justify-center px-6 py-12">
+      <div className="flex-1 flex flex-col justify-center px-6 py-12 max-w-md mx-auto w-full">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center p-3 bg-violet-600/10 rounded-2xl border border-violet-500/20 mb-4">
             <Package className="w-10 h-10 text-violet-500" />
           </div>
           <h1>OneCMD Warehouse</h1>
-          <p className="text-gray-400 mt-2">AI-Powered Warehouse Management Terminal</p>
+          <p className="text-gray-400 mt-2 text-sm">AI-Powered Warehouse Operations Terminal</p>
         </div>
 
         <form onSubmit={handleLogin} className="glass-panel space-y-6">
           <div className="space-y-2">
-            <label className="block text-sm font-semibold uppercase tracking-wider text-gray-400">Warehouse Location</label>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Select Location</label>
             <select 
               value={activeLocation || ''} 
               onChange={e => setActiveLocation(e.target.value)}
-              className="w-full"
+              className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl py-2 px-3 focus:outline-none focus:ring-2 focus:ring-violet-500"
             >
               <option value="" disabled>Select active store...</option>
               {locations.map(loc => (
@@ -1262,35 +1695,57 @@ export default function App() {
           </div>
 
           <div className="space-y-2">
-            <label className="block text-sm font-semibold uppercase tracking-wider text-gray-400">Location PIN / Password</label>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Identify Yourself</label>
+            <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
+              <button
+                type="button"
+                onClick={() => { setLoginMode('technician'); setAuthError(''); }}
+                className={`py-2 px-3 text-xs font-medium rounded-lg transition-all ${loginMode === 'technician' ? 'bg-violet-600 text-white' : 'text-gray-400 hover:text-white'}`}
+              >
+                Technician PIN
+              </button>
+              <button
+                type="button"
+                onClick={() => { setLoginMode('admin'); setAuthError(''); }}
+                className={`py-2 px-3 text-xs font-medium rounded-lg transition-all ${loginMode === 'admin' ? 'bg-violet-600 text-white' : 'text-gray-400 hover:text-white'}`}
+              >
+                Super Admin
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">
+              {loginMode === 'admin' ? 'Super Admin Password' : '4-Digit PIN Code'}
+            </label>
             <div className="relative">
               <span className="absolute inset-y-0 left-0 pl-4 flex items-center text-gray-500">
-                <Lock className="w-5 h-5" />
+                <Lock className="w-4 h-4" />
               </span>
               <input 
                 type="password" 
-                placeholder="Enter PIN (e.g. atk_moncton_123)" 
+                placeholder={loginMode === 'admin' ? 'Enter admin password...' : 'Enter your 4-digit PIN...'} 
                 value={pinInput}
                 onChange={e => setPinInput(e.target.value)}
-                className="pl-12 w-full"
+                className="pl-11 w-full bg-slate-900 border border-slate-700 text-white rounded-xl py-2 px-3 focus:outline-none focus:ring-2 focus:ring-violet-500"
               />
             </div>
           </div>
 
           {authError && (
-            <div className="flex items-center gap-2 text-rose-500 bg-rose-500/10 p-3 rounded-lg border border-rose-500/20 text-sm">
-              <AlertTriangle className="w-5 h-5 flex-shrink-0" />
+            <div className="flex items-center gap-2.5 text-rose-400 bg-rose-500/10 p-3.5 rounded-xl border border-rose-500/20 text-xs">
+              <AlertTriangle className="w-4.5 h-4.5 flex-shrink-0" />
               <span>{authError}</span>
             </div>
           )}
 
-          <button type="submit" className="w-full btn-primary">
-            Authenticate Location
+          <button type="submit" className="w-full btn-primary bg-violet-600 hover:bg-violet-500 text-white font-semibold py-2.5 rounded-xl transition-colors">
+            {loginMode === 'admin' ? 'Enter Admin Dashboard' : 'Open Employee Portal'}
           </button>
         </form>
         
         <div className="text-center text-xs text-gray-500 mt-8">
-          OneCMD AI Warehouse System v1.0.0
+          OneCMD AI Warehouse System v1.1.0
         </div>
       </div>
     );
@@ -1348,107 +1803,364 @@ export default function App() {
         {/* tab dashboard */}
         {activeTab === 'dashboard' && (
           <div className="space-y-6 flex-1 flex flex-col justify-between">
-            {/* Stack of actions in a nice line with updated spacing */}
+            {/* Stack of actions based on roles & permissions */}
             <div className="space-y-4">
-              <button 
-                onClick={() => setActiveTab('receive')}
-                className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-lime-500"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-lime-500/10 flex items-center justify-center border border-lime-500/20 text-lime-600">
-                    <Plus className="w-6 h-6" />
-                  </div>
-                  <div className="text-left">
-                    <span className="action-card__title">Receive Inventory</span>
-                    <span className="action-card__sub">Scan label sticker to increase stock</span>
-                  </div>
-                </div>
-                <span className="badge badge-lime">Intake</span>
-              </button>
+              {/* Role: Technician (Worker) dashboard sections */}
+              {currentUser?.role === 'worker' && (() => {
+                const currentTechProfile = configDb?.technicians.find(t => t.id === currentUser.technicianId);
+                const canEditInventory = currentTechProfile?.canEditInventory ?? false;
 
-              <button 
-                onClick={() => setActiveTab('transfer')}
-                className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-blue-500"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center border border-blue-500/20 text-blue-600">
-                    <ArrowLeftRight className="w-5 h-5" />
-                  </div>
-                  <div className="text-left">
-                    <span className="action-card__title">Inter-Store Move</span>
-                    <span className="action-card__sub">Transfer items to Oromocto, Saint John, etc.</span>
-                  </div>
-                </div>
-                <span className="badge badge-blue">Transfer</span>
-              </button>
+                return (
+                  <>
+                    {/* Geofenced Clock In/Out card */}
+                    <button 
+                      type="button"
+                      onClick={() => setActiveTab('timecard')}
+                      className={`w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-purple-500`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-purple-500/10 flex items-center justify-center border border-purple-500/20 text-purple-400">
+                          <Clock className="w-5 h-5" />
+                        </div>
+                        <div className="text-left">
+                          <span className="action-card__title">🕒 Clock In / Clock Out</span>
+                          <span className="action-card__sub font-mono">
+                            {isClockedIn ? `Shift active: ${shiftHoursText}` : 'Punch in for your shift'}
+                          </span>
+                        </div>
+                      </div>
+                      <span className={`badge ${isClockedIn ? 'badge-green' : 'badge-amber'} text-xs`}>
+                        {isClockedIn ? 'Working' : 'Off Duty'}
+                      </span>
+                    </button>
 
-              <button 
-                onClick={() => setActiveTab('orders')}
-                className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-emerald-500"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 text-emerald-600">
-                    <Send className="w-5 h-5" />
-                  </div>
-                  <div className="text-left">
-                    <span className="action-card__title">Orders to Dispatch</span>
-                    <span className="action-card__sub">Pack and print labels for customer shipments</span>
-                  </div>
-                </div>
-                {orders.length > 0 ? (
-                  <span className="badge badge-rose">{orders.length} Pending</span>
-                ) : (
-                  <span className="badge badge-green">Ready</span>
-                )}
-              </button>
+                    {/* My Weekly Schedule */}
+                    <button 
+                      type="button"
+                      onClick={() => setActiveTab('schedule')}
+                      className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-cyan-500"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20 text-cyan-400">
+                          <Calendar className="w-5 h-5" />
+                        </div>
+                        <div className="text-left">
+                          <span className="action-card__title">📅 My Shift Calendar</span>
+                          <span className="action-card__sub">View your scheduled shifts this week</span>
+                        </div>
+                      </div>
+                      <span className="badge badge-blue text-xs">Roster</span>
+                    </button>
 
-              <button 
-                onClick={() => setActiveTab('estimate')}
-                className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-violet-500"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-violet-500/10 flex items-center justify-center border border-violet-500/20 text-violet-600">
-                    <Sparkles className="w-5 h-5" />
-                  </div>
-                  <div className="text-left">
-                    <span className="action-card__title">AI Stack Estimator</span>
-                    <span className="action-card__sub">Estimate pile counts via vision model</span>
-                  </div>
-                </div>
-                <span className="badge badge-violet">AI Count</span>
-              </button>
+                    {/* Receive Inventory (Lime) */}
+                    <button 
+                      type="button"
+                      onClick={() => {
+                        if (!canEditInventory) {
+                          showTemporaryMessage('error', 'RLS Policy: You do not have permissions to edit inventory.');
+                          return;
+                        }
+                        setActiveTab('receive');
+                      }}
+                      className={`w-full glass-panel flex items-center justify-between p-4 border-l-4 border-l-lime-500 ${
+                        canEditInventory ? 'glass-panel-interactive cursor-pointer' : 'opacity-50 cursor-not-allowed'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-lime-500/10 flex items-center justify-center border border-lime-500/20 text-lime-400">
+                          {canEditInventory ? <Plus className="w-6 h-6" /> : <Lock className="w-5 h-5 text-gray-500" />}
+                        </div>
+                        <div className="text-left">
+                          <span className="action-card__title">Receive Inventory</span>
+                          <span className="action-card__sub">Scan labels to intake products</span>
+                        </div>
+                      </div>
+                      <span className="badge badge-lime text-xs">{canEditInventory ? 'Intake' : 'Read-only'}</span>
+                    </button>
 
-              <button 
-                onClick={() => setActiveTab('audit')}
-                className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-amber-500"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center border border-amber-500/20 text-amber-600">
-                    <BarChart3 className="w-5 h-5" />
-                  </div>
-                  <div className="text-left">
-                    <span className="action-card__title">Weekly AI Audit</span>
-                    <span className="action-card__sub">Compare system records to physical rows</span>
-                  </div>
-                </div>
-                <span className="badge badge-amber">Audit</span>
-              </button>
+                    {/* Inter-Store Move (Blue) */}
+                    <button 
+                      type="button"
+                      onClick={() => {
+                        if (!canEditInventory) {
+                          showTemporaryMessage('error', 'RLS Policy: You do not have permissions to edit inventory.');
+                          return;
+                        }
+                        setActiveTab('transfer');
+                      }}
+                      className={`w-full glass-panel flex items-center justify-between p-4 border-l-4 border-l-blue-500 ${
+                        canEditInventory ? 'glass-panel-interactive cursor-pointer' : 'opacity-50 cursor-not-allowed'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center border border-blue-500/20 text-blue-400">
+                          {canEditInventory ? <ArrowLeftRight className="w-5 h-5" /> : <Lock className="w-5 h-5 text-gray-500" />}
+                        </div>
+                        <div className="text-left">
+                          <span className="action-card__title">Inter-Store Move</span>
+                          <span className="action-card__sub">Transfer stock to other stores</span>
+                        </div>
+                      </div>
+                      <span className="badge badge-blue text-xs">{canEditInventory ? 'Transfer' : 'Read-only'}</span>
+                    </button>
 
-              <button 
-                onClick={() => setActiveTab('logs')}
-                className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-rose-500"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-rose-500/10 flex items-center justify-center border border-rose-500/20 text-rose-600">
-                    <Lock className="w-5 h-5" />
-                  </div>
-                  <div className="text-left">
-                    <span className="action-card__title">Transaction Logs & Corrections</span>
-                    <span className="action-card__sub">View past logs and request stock corrections</span>
-                  </div>
-                </div>
-                <span className="badge badge-rose">Logs</span>
-              </button>
+                    {/* Orders to Dispatch (Emerald) */}
+                    <button 
+                      type="button"
+                      onClick={() => setActiveTab('orders')}
+                      className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-emerald-500"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 text-emerald-400">
+                          <Send className="w-5 h-5" />
+                        </div>
+                        <div className="text-left">
+                          <span className="action-card__title">Orders to Dispatch</span>
+                          <span className="action-card__sub">Pack customer orders & register tracking</span>
+                        </div>
+                      </div>
+                      {orders.length > 0 ? (
+                        <span className="badge badge-rose text-xs">{orders.length} Pending</span>
+                      ) : (
+                        <span className="badge badge-green text-xs">Ready</span>
+                      )}
+                    </button>
+
+                    {/* AI Stack Estimator (Violet) */}
+                    <button 
+                      type="button"
+                      onClick={() => setActiveTab('estimate')}
+                      className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-violet-500"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-violet-500/10 flex items-center justify-center border border-violet-500/20 text-violet-400">
+                          <Sparkles className="w-5 h-5" />
+                        </div>
+                        <div className="text-left">
+                          <span className="action-card__title">AI Stack Estimator</span>
+                          <span className="action-card__sub">Estimate pile counts via vision model</span>
+                        </div>
+                      </div>
+                      <span className="badge badge-violet text-xs">AI Count</span>
+                    </button>
+
+                    {/* Weekly AI Audit (Amber) */}
+                    <button 
+                      type="button"
+                      onClick={() => {
+                        if (!canEditInventory) {
+                          showTemporaryMessage('error', 'RLS Policy: You do not have permissions to edit inventory.');
+                          return;
+                        }
+                        setActiveTab('audit');
+                      }}
+                      className={`w-full glass-panel flex items-center justify-between p-4 border-l-4 border-l-amber-500 ${
+                        canEditInventory ? 'glass-panel-interactive cursor-pointer' : 'opacity-50 cursor-not-allowed'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center border border-amber-500/20 text-amber-400">
+                          {canEditInventory ? <BarChart3 className="w-5 h-5" /> : <Lock className="w-5 h-5 text-gray-500" />}
+                        </div>
+                        <div className="text-left">
+                          <span className="action-card__title">Weekly AI Audit</span>
+                          <span className="action-card__sub">Reconcile database record discrepancies</span>
+                        </div>
+                      </div>
+                      <span className="badge badge-amber text-xs">{canEditInventory ? 'Audit' : 'Read-only'}</span>
+                    </button>
+
+                    {/* Transaction Logs (Rose) */}
+                    <button 
+                      type="button"
+                      onClick={() => setActiveTab('logs')}
+                      className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-rose-500"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-rose-500/10 flex items-center justify-center border border-rose-500/20 text-rose-400">
+                          <Lock className="w-5 h-5" />
+                        </div>
+                        <div className="text-left">
+                          <span className="action-card__title">Logs & Corrections Request</span>
+                          <span className="action-card__sub">View past transactions & request corrections</span>
+                        </div>
+                      </div>
+                      <span className="badge badge-rose text-xs">Logs</span>
+                    </button>
+                  </>
+                );
+              })()}
+
+              {/* Role: Manager / Admin dashboard sections */}
+              {currentUser?.role === 'manager' && (
+                <>
+                  {/* Roster Builder & Scheduler */}
+                  <button 
+                    type="button"
+                    onClick={() => setActiveTab('schedule')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-cyan-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20 text-cyan-400">
+                        <Calendar className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">📅 Roster Builder & Scheduler</span>
+                        <span className="action-card__sub">Schedule employee weekly rotations</span>
+                      </div>
+                    </div>
+                    <span className="badge badge-blue text-xs">Scheduler</span>
+                  </button>
+
+                  {/* Technician Payroll Ledger */}
+                  <button 
+                    type="button"
+                    onClick={() => setActiveTab('payroll')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-emerald-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 text-emerald-400">
+                        <DollarSign className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">💰 Technician Payroll Ledger</span>
+                        <span className="action-card__sub">Edit pay rates & mark payouts as paid</span>
+                      </div>
+                    </div>
+                    <span className="badge badge-green text-xs">Payroll</span>
+                  </button>
+
+                  {/* Access Governance Rules */}
+                  <button 
+                    type="button"
+                    onClick={() => setActiveTab('permissions')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-violet-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-violet-500/10 flex items-center justify-center border border-violet-500/20 text-violet-400">
+                        <Shield className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">🔐 Access Governance & Staff List</span>
+                        <span className="action-card__sub">Register technicians and configure RLS permissions</span>
+                      </div>
+                    </div>
+                    <span className="badge badge-violet text-xs">Governance</span>
+                  </button>
+
+                  {/* Receive Inventory (Lime) */}
+                  <button 
+                    type="button"
+                    onClick={() => setActiveTab('receive')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-lime-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-lime-500/10 flex items-center justify-center border border-lime-500/20 text-lime-400">
+                        <Plus className="w-6 h-6" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">Receive Inventory</span>
+                        <span className="action-card__sub">Scan label sticker to increase stock</span>
+                      </div>
+                    </div>
+                    <span className="badge badge-lime text-xs font-semibold">Intake</span>
+                  </button>
+
+                  {/* Inter-Store Move (Blue) */}
+                  <button 
+                    type="button"
+                    onClick={() => setActiveTab('transfer')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-blue-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center border border-blue-500/20 text-blue-400">
+                        <ArrowLeftRight className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">Inter-Store Move</span>
+                        <span className="action-card__sub">Transfer items to Oromocto, Saint John, etc.</span>
+                      </div>
+                    </div>
+                    <span className="badge badge-blue text-xs font-semibold">Transfer</span>
+                  </button>
+
+                  {/* Orders to Dispatch (Emerald) */}
+                  <button 
+                    type="button"
+                    onClick={() => setActiveTab('orders')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-emerald-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 text-emerald-400">
+                        <Send className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">Orders to Dispatch</span>
+                        <span className="action-card__sub">Pack and print labels for customer shipments</span>
+                      </div>
+                    </div>
+                    {orders.length > 0 ? (
+                      <span className="badge badge-rose text-xs">{orders.length} Pending</span>
+                    ) : (
+                      <span className="badge badge-green text-xs">Ready</span>
+                    )}
+                  </button>
+
+                  {/* AI Stack Estimator (Violet) */}
+                  <button 
+                    type="button"
+                    onClick={() => setActiveTab('estimate')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-violet-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-violet-500/10 flex items-center justify-center border border-violet-500/20 text-violet-400">
+                        <Sparkles className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">AI Stack Estimator</span>
+                        <span className="action-card__sub">Estimate pile counts via vision model</span>
+                      </div>
+                    </div>
+                    <span className="badge badge-violet text-xs font-semibold">AI Count</span>
+                  </button>
+
+                  {/* Weekly AI Audit (Amber) */}
+                  <button 
+                    type="button"
+                    onClick={() => setActiveTab('audit')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-amber-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center border border-amber-500/20 text-amber-400">
+                        <BarChart3 className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">Weekly AI Audit</span>
+                        <span className="action-card__sub">Compare system records to physical rows</span>
+                      </div>
+                    </div>
+                    <span className="badge badge-amber text-xs font-semibold">Audit</span>
+                  </button>
+
+                  {/* Transaction Logs & Corrections (Rose) */}
+                  <button 
+                    type="button"
+                    onClick={() => setActiveTab('logs')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-rose-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-rose-500/10 flex items-center justify-center border border-rose-500/20 text-rose-400">
+                        <Lock className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">Transaction Logs & Corrections</span>
+                        <span className="action-card__sub">View past logs and request stock corrections</span>
+                      </div>
+                    </div>
+                    <span className="badge badge-rose text-xs font-semibold">Logs</span>
+                  </button>
+                </>
+              )}
             </div>
 
             {/* Dev / test helper — undo accidental intake */}
@@ -1519,6 +2231,8 @@ export default function App() {
                 setExtractedSpecs(null); 
                 setBulkExtractedSpecs(null);
                 setBulkQuantities({});
+                setProductPhoto(null);
+                setBulkProductPhotos({});
                 setQuantityInput(''); 
                 setWinterApproved(false); 
                 setReceiveScanError(''); 
@@ -1551,13 +2265,35 @@ export default function App() {
                 >
                   ⭕ Sidewall Rubber
                 </button>
+                <button
+                  onClick={() => setScanMode('bulk')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    scanMode === 'bulk'
+                      ? 'bg-primary text-black shadow-lg shadow-primary/20'
+                      : 'bg-glass border border-glass text-gray-400 hover:text-white'
+                  }`}
+                >
+                  📚 Bulk Stack
+                </button>
               </div>
             </div>
 
             {!receivePhoto ? (
               <ScanViewfinder
-                label={scanMode === 'sidewall' ? "Take Photo of Tire Sidewall" : "Take Photo of Tire Label"}
-                hint={scanMode === 'sidewall' ? "Point camera straight at the embossed rubber text — include DOT code and sizing specs" : "Point camera straight at the sticker — include brand, size, and snowflake symbol if present"}
+                label={
+                  scanMode === 'sidewall' 
+                    ? "Take Photo of Tire Sidewall" 
+                    : scanMode === 'bulk'
+                    ? "Take Photo of Tire Stack (Bulk)"
+                    : "Take Photo of Tire Label"
+                }
+                hint={
+                  scanMode === 'sidewall' 
+                    ? "Point camera straight at the embossed rubber text — include DOT code and sizing specs" 
+                    : scanMode === 'bulk'
+                    ? "Point camera straight at the stack of tires — ensure all paper stickers are clearly visible and in frame"
+                    : "Point camera straight at the sticker — include brand, size, and snowflake symbol if present"
+                }
                 accent="lime"
                 onCapture={processReceiveSticker}
               />
@@ -1566,7 +2302,16 @@ export default function App() {
                 <div className="relative rounded-2xl overflow-hidden border border-glass max-h-[200px]">
                   <img src={receivePhoto} alt="Tire Label Preview" className="w-full h-full object-cover" />
                   <button 
-                    onClick={() => { setReceivePhoto(null); setExtractedSpecs(null); setReceiveScanError(''); setWinterApproved(false); }} 
+                    onClick={() => { 
+                      setReceivePhoto(null); 
+                      setExtractedSpecs(null); 
+                      setBulkExtractedSpecs(null);
+                      setBulkQuantities({});
+                      setProductPhoto(null);
+                      setBulkProductPhotos({});
+                      setReceiveScanError(''); 
+                      setWinterApproved(false); 
+                    }} 
                     className="absolute top-2 right-2 btn-secondary py-2 px-3 text-xs"
                   >
                     Retake
@@ -1624,6 +2369,61 @@ export default function App() {
                           <option value="wheel">⭕ Wheel</option>
                         </select>
                       </div>
+
+                      {skuExists === false && (
+                        <div className="col-span-2 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3.5 space-y-3">
+                          <div className="flex items-start gap-2.5 text-amber-400">
+                            <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+                            <div>
+                              <strong className="text-sm font-semibold">Please take a photo for inventory.</strong>
+                              <p className="text-xs text-gray-400 mt-0.5">This is a new product. Capturing a photo will automatically generate a professional catalog image with a clean white background.</p>
+                            </div>
+                          </div>
+
+                          {!productPhoto ? (
+                            <div>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                capture="environment"
+                                id="single-product-photo-upload"
+                                className="hidden"
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) {
+                                    const reader = new FileReader();
+                                    reader.onload = (evt) => {
+                                      if (evt.target?.result) {
+                                        setProductPhoto(evt.target.result as string);
+                                      }
+                                    };
+                                    reader.readAsDataURL(file);
+                                  }
+                                }}
+                              />
+                              <label
+                                htmlFor="single-product-photo-upload"
+                                className="btn-secondary py-2.5 px-4 text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer w-full"
+                              >
+                                <Camera className="w-4 h-4 text-amber-400" />
+                                Take Product Photo
+                              </label>
+                            </div>
+                          ) : (
+                            <div className="relative rounded-lg overflow-hidden border border-glass max-h-[160px] bg-glass-dark">
+                              <img src={productPhoto} alt="Product Preview" className="w-full h-full object-contain mx-auto" />
+                              <button
+                                type="button"
+                                onClick={() => setProductPhoto(null)}
+                                className="absolute top-2 right-2 bg-red-600 hover:bg-red-500 text-white rounded-lg p-1.5 transition-colors"
+                                title="Delete Photo"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       {extractedSpecs.product_type === 'wheel' ? (
                         <>
@@ -1920,6 +2720,65 @@ export default function App() {
                                 <option value="tire">🚗 Tire</option>
                                 <option value="wheel">⭕ Wheel</option>
                               </select>
+                            </div>
+
+                            <div className="col-span-2 bg-glass-dark/50 border border-glass rounded-xl p-3 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-gray-400">Product Image:</span>
+                                {bulkProductPhotos[idx] && (
+                                  <span className="badge badge-green text-[10px]">Photo Ready</span>
+                                )}
+                              </div>
+
+                              {!bulkProductPhotos[idx] ? (
+                                <div>
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    capture="environment"
+                                    id={`bulk-photo-upload-${idx}`}
+                                    className="hidden"
+                                    onChange={(e) => {
+                                      const file = e.target.files?.[0];
+                                      if (file) {
+                                        const reader = new FileReader();
+                                        reader.onload = (evt) => {
+                                          if (evt.target?.result) {
+                                            setBulkProductPhotos({
+                                              ...bulkProductPhotos,
+                                              [idx]: evt.target.result as string
+                                            });
+                                          }
+                                        };
+                                        reader.readAsDataURL(file);
+                                      }
+                                    }}
+                                  />
+                                  <label
+                                    htmlFor={`bulk-photo-upload-${idx}`}
+                                    className="btn-secondary py-1.5 px-3 text-[11px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer w-full"
+                                  >
+                                    <Camera className="w-3.5 h-3.5 text-emerald-400" />
+                                    Snap Product Photo
+                                  </label>
+                                </div>
+                              ) : (
+                                <div className="relative rounded-lg overflow-hidden border border-glass max-h-[120px] bg-glass-dark">
+                                  <img src={bulkProductPhotos[idx]} alt={`Product ${idx + 1} Preview`} className="w-full h-full object-contain mx-auto" />
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const newPhotos = { ...bulkProductPhotos };
+                                      delete newPhotos[idx];
+                                      setBulkProductPhotos(newPhotos);
+                                    }}
+                                    className="absolute top-1.5 right-1.5 bg-red-600 hover:bg-red-500 text-white rounded-md p-1 transition-colors"
+                                    title="Delete Photo"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              )}
                             </div>
 
                             {item.product_type === 'wheel' ? (
@@ -3022,6 +3881,785 @@ export default function App() {
               >
                 Submit Flag Request
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* tab: Technician Timecard geofenced portal */}
+      {activeTab === 'timecard' && currentUser?.role === 'worker' && (
+        <div className="space-y-6 flex-1 flex flex-col">
+          <div className="flex items-center gap-2 mb-2">
+            <button 
+              onClick={() => setActiveTab('dashboard')} 
+              className="btn-secondary py-2 px-3 bg-white/5 border border-glass text-slate-100"
+            >
+              <ArrowLeftRight className="w-4 h-4 rotate-180 inline mr-1" /> Back
+            </button>
+            <h2 className="text-lg font-bold text-white uppercase tracking-wider">My Timecard</h2>
+          </div>
+
+          {/* Geofence Status Panel */}
+          <div className="glass-panel space-y-4">
+            <div className="flex items-center justify-between border-b border-glass pb-3">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-400">
+                <MapPin className="w-4 h-4 text-violet-400" />
+                <span>Geofence Boundary Check</span>
+              </div>
+              {isOnSite ? (
+                <span className="badge badge-green text-xs">On Site</span>
+              ) : (
+                <span className="badge badge-rose text-xs">Out of Bounds</span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 text-xs">
+              <div className="space-y-1">
+                <span className="text-gray-500 block">GPS Coordinates:</span>
+                <span className="font-mono text-slate-300">
+                  {gpsCoords ? `${gpsCoords.lat.toFixed(5)}, ${gpsCoords.lng.toFixed(5)}` : 'Detecting GPS...'}
+                </span>
+              </div>
+              <div className="space-y-1">
+                <span className="text-gray-500 block">Distance to Shop:</span>
+                <span className="font-semibold text-slate-300">
+                  {distanceToShop !== null ? `${Math.round(distanceToShop * 1000)} meters` : 'Calculating...'}
+                </span>
+              </div>
+            </div>
+
+            {gpsError && (
+              <div className="text-[11px] text-rose-400 bg-rose-500/10 p-2.5 rounded-lg border border-rose-500/20">
+                ⚠️ {gpsError}
+              </div>
+            )}
+          </div>
+
+          {/* Clock Controls */}
+          <div className="glass-panel flex flex-col items-center justify-center py-8 space-y-6 text-center">
+            <div className="space-y-1">
+              <div className="text-xs font-semibold uppercase tracking-wider text-gray-400">Active Shift duration</div>
+              <div className="text-4xl font-mono font-bold text-white tracking-widest">{shiftHoursText}</div>
+            </div>
+
+            {!isClockedIn ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!configDb) return;
+                  if (!isOnSite) {
+                    showTemporaryMessage('error', 'Cannot clock in: you are not within the shop boundary.');
+                    return;
+                  }
+                  const newShift = {
+                    id: 'shift-' + Math.random().toString(36).substring(2),
+                    technicianId: currentUser.technicianId,
+                    technicianName: currentUser.name,
+                    locationId: activeLocation,
+                    locationName: locationName,
+                    clockIn: new Date().toISOString(),
+                    clockOut: null,
+                    status: 'active',
+                    payoutStatus: 'unpaid'
+                  };
+                  const updated = {
+                    ...configDb,
+                    timecards: [...(configDb?.timecards || []), newShift]
+                  };
+                  await saveConfig(updated);
+                  setIsClockedIn(true);
+                  setActiveShift(newShift);
+                  setOutOfBoundsCount(0);
+                  showTemporaryMessage('success', 'Shift started! Clocked in successfully.');
+                }}
+                disabled={!isOnSite}
+                className={`w-full py-4 rounded-xl font-bold transition-all text-sm flex items-center justify-center gap-2 ${
+                  isOnSite 
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20 cursor-pointer' 
+                    : 'bg-slate-850 text-gray-500 border border-slate-800 cursor-not-allowed'
+                }`}
+              >
+                <Clock className="w-5 h-5" />
+                {isOnSite ? 'Clock In Now' : 'Must Be On-Site to Clock In'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!configDb) return;
+                  const clockOutTime = new Date().toISOString();
+                  const updatedTimecards = configDb.timecards.map((tc: any) => {
+                    if (tc.id === activeShift.id) {
+                      return {
+                        ...tc,
+                        status: 'completed',
+                        clockOut: clockOutTime
+                      };
+                    }
+                    return tc;
+                  });
+                  const updated = {
+                    ...configDb,
+                    timecards: updatedTimecards
+                  };
+                  await saveConfig(updated);
+                  setIsClockedIn(false);
+                  setActiveShift(null);
+                  setOutOfBoundsCount(0);
+                  showTemporaryMessage('success', 'Shift completed! Clocked out successfully.');
+                }}
+                className="w-full py-4 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl transition-all text-sm flex items-center justify-center gap-2 shadow-lg shadow-rose-600/20 cursor-pointer"
+              >
+                <LogOut className="w-5 h-5" />
+                Clock Out & End Shift
+              </button>
+            )}
+          </div>
+
+          {/* Earnings & Stats */}
+          <div className="glass-panel space-y-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Earnings Summary</h3>
+            {(() => {
+              const techProfile = configDb?.technicians.find(t => t.id === currentUser.technicianId);
+              const rate = techProfile?.hourlyRate || 0;
+              
+              const unpaidShifts = (configDb?.timecards || []).filter(
+                (tc: any) => tc.technicianId === currentUser.technicianId && tc.status === 'completed' && tc.payoutStatus === 'unpaid'
+              );
+              
+              const totalMs = unpaidShifts.reduce((acc: number, shift: any) => {
+                return acc + (Date.parse(shift.clockOut) - Date.parse(shift.clockIn));
+              }, 0);
+              
+              const totalHours = totalMs / 3600000;
+              const earnings = totalHours * rate;
+              
+              return (
+                <div className="grid grid-cols-2 gap-4 text-center">
+                  <div className="bg-white/5 p-3 rounded-xl border border-glass">
+                    <div className="text-[10px] text-gray-500 uppercase">Unpaid Hours</div>
+                    <div className="text-xl font-bold text-slate-100 mt-1">{totalHours.toFixed(1)} hrs</div>
+                  </div>
+                  <div className="bg-white/5 p-3 rounded-xl border border-glass">
+                    <div className="text-[10px] text-gray-500 uppercase">Pending Earnings</div>
+                    <div className="text-xl font-bold text-emerald-400 mt-1">${earnings.toFixed(2)}</div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Logs Table */}
+          <div className="glass-panel space-y-4 flex-1 overflow-hidden flex flex-col">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">My Shift History</h3>
+            <div className="flex-1 overflow-y-auto space-y-2.5 max-h-[220px]">
+              {(() => {
+                const myShifts = (configDb?.timecards || []).filter(
+                  (tc: any) => tc.technicianId === currentUser.technicianId
+                ).sort((a: any, b: any) => Date.parse(b.clockIn) - Date.parse(a.clockIn));
+
+                if (myShifts.length === 0) {
+                  return <div className="text-center py-6 text-xs text-gray-500">No shift history found.</div>;
+                }
+
+                return myShifts.map((shift: any) => {
+                  const inDate = new Date(shift.clockIn);
+                  const hoursWorked = shift.clockOut 
+                    ? ((Date.parse(shift.clockOut) - Date.parse(shift.clockIn)) / 3600000).toFixed(2)
+                    : 'Active';
+
+                  return (
+                    <div key={shift.id} className="bg-white/5 p-3 rounded-xl border border-glass flex justify-between items-center text-xs">
+                      <div className="space-y-1">
+                        <div className="font-semibold text-slate-200">{inDate.toLocaleDateString()}</div>
+                        <div className="text-[10px] text-gray-500">
+                          {inDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {
+                            shift.clockOut 
+                              ? new Date(shift.clockOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                              : 'Now'
+                          }
+                        </div>
+                      </div>
+                      <div className="text-right space-y-1">
+                        <span className="font-bold text-slate-100">{hoursWorked} hrs</span>
+                        <div>
+                          {shift.payoutStatus === 'paid' ? (
+                            <span className="text-[9px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">Paid</span>
+                          ) : shift.status === 'active' ? (
+                            <span className="text-[9px] text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">Working</span>
+                          ) : (
+                            <span className="text-[9px] text-gray-400 bg-white/5 px-1.5 py-0.5 rounded border border-glass">Unpaid</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* tab: Shift Roster calendar */}
+      {activeTab === 'schedule' && (
+        <div className="space-y-6 flex-1 flex flex-col">
+          <div className="flex items-center gap-2 mb-2">
+            <button 
+              onClick={() => setActiveTab('dashboard')} 
+              className="btn-secondary py-2 px-3 bg-white/5 border border-glass text-slate-100"
+            >
+              <ArrowLeftRight className="w-4 h-4 rotate-180 inline mr-1" /> Back
+            </button>
+            <h2 className="text-lg font-bold text-white uppercase tracking-wider">
+              {currentUser?.role === 'manager' ? 'Roster Builder' : 'My Shift Roster'}
+            </h2>
+          </div>
+
+          {currentUser?.role === 'worker' ? (
+            <div className="glass-panel space-y-4">
+              <div className="flex items-center justify-between border-b border-glass pb-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Weekly Shift Calendar</h3>
+                <span className="badge badge-green text-xs">Active</span>
+              </div>
+
+              <div className="space-y-3">
+                {(() => {
+                  const myShifts = (configDb?.schedules || []).filter(
+                    (s: any) => s.technicianId === currentUser.technicianId
+                  );
+
+                  if (myShifts.length === 0) {
+                    return (
+                      <div className="text-center py-12 text-sm text-gray-500">
+                        No shifts scheduled for you this week.
+                      </div>
+                    );
+                  }
+
+                  return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map(day => {
+                    const dayShifts = myShifts.filter((s: any) => s.day === day);
+                    return (
+                      <div key={day} className="flex justify-between items-center p-3.5 bg-white/5 border border-glass rounded-xl">
+                        <span className="font-semibold text-sm text-slate-200">{day}</span>
+                        <div>
+                          {dayShifts.length > 0 ? (
+                            dayShifts.map((s, idx) => (
+                              <span key={idx} className="badge badge-violet text-xs">
+                                {s.locationName} ({s.hours})
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-xs text-gray-500 font-medium">Off Duty</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div className="glass-panel space-y-4">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Roster Building Parameters</h3>
+                <div className="grid grid-cols-2 gap-4 text-xs">
+                  <div className="space-y-2 col-span-2">
+                    <label className="block text-gray-500 font-bold uppercase">Week Starting Date</label>
+                    <input 
+                      type="date"
+                      value={scheduleWeekStart}
+                      onChange={e => setScheduleWeekStart(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl py-2.5 px-3 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-3 pt-2">
+                  <label className="block text-gray-400 font-semibold uppercase tracking-wider text-xs">Specify Working Days Quota</label>
+                  <div className="space-y-2.5">
+                    {configDb?.technicians.map((tech: any) => (
+                      <div key={tech.id} className="flex justify-between items-center p-3 bg-white/5 border border-glass rounded-xl text-xs">
+                        <div>
+                          <div className="font-semibold text-slate-200">{tech.name}</div>
+                          <div className="text-[10px] text-gray-500">Home: {locations.find(l => l.id === tech.locationId)?.name}</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const curr = rosterDaysQuotas[tech.id] || 0;
+                              setRosterDaysQuotas({ ...rosterDaysQuotas, [tech.id]: Math.max(0, curr - 1) });
+                            }}
+                            className="w-6 h-6 rounded bg-slate-800 border border-glass flex items-center justify-center font-bold text-white hover:bg-slate-700 transition-colors"
+                          >
+                            -
+                          </button>
+                          <span className="w-8 text-center font-bold text-slate-200">{rosterDaysQuotas[tech.id] || 0} days</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const curr = rosterDaysQuotas[tech.id] || 0;
+                              setRosterDaysQuotas({ ...rosterDaysQuotas, [tech.id]: Math.min(6, curr + 1) });
+                            }}
+                            className="w-6 h-6 rounded bg-slate-800 border border-glass flex items-center justify-center font-bold text-white hover:bg-slate-700 transition-colors"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!scheduleWeekStart) {
+                      showTemporaryMessage('error', 'Please pick a Week Starting date first.');
+                      return;
+                    }
+                    setGeneratingRoster(true);
+                    setTimeout(() => {
+                      const previewShifts: any[] = [];
+                      const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                      
+                      configDb?.technicians.forEach(tech => {
+                        const quota = rosterDaysQuotas[tech.id] || 0;
+                        const shuffledDays = [...days].sort(() => 0.5 - Math.random());
+                        for (let i = 0; i < quota; i++) {
+                          const day = shuffledDays[i];
+                          const locObj = locations.find(l => l.id === tech.locationId) || locations[0];
+                          previewShifts.push({
+                            id: `alloc-${tech.id}-${day}`,
+                            technicianId: tech.id,
+                            technicianName: tech.name,
+                            locationId: tech.locationId,
+                            locationName: locObj.name,
+                            day: day,
+                            date: scheduleWeekStart,
+                            hours: '09:00 - 17:00'
+                          });
+                        }
+                      });
+
+                      setGeneratedRosterPreview(previewShifts);
+                      setGeneratingRoster(false);
+                      showTemporaryMessage('success', 'Roster generated successfully! Review below.');
+                    }, 1000);
+                  }}
+                  disabled={generatingRoster}
+                  className="w-full btn-primary bg-violet-600 hover:bg-violet-500 py-3 rounded-xl font-bold flex items-center justify-center gap-2 text-sm text-white"
+                >
+                  {generatingRoster ? <RotateCw className="w-4.5 h-4.5 animate-spin" /> : <Sparkles className="w-4.5 h-4.5" />}
+                  Auto-Generate Weekly Schedule
+                </button>
+              </div>
+
+              {generatedRosterPreview && (
+                <div className="glass-panel space-y-4">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Generated Schedule Preview</h3>
+                  <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                    {generatedRosterPreview.map((item, idx) => (
+                      <div key={idx} className="bg-white/5 p-3 rounded-xl border border-glass flex justify-between items-center text-xs">
+                        <div>
+                          <span className="badge badge-violet text-[10px] mr-2">{item.day}</span>
+                          <span className="font-semibold text-slate-200">{item.technicianName}</span>
+                        </div>
+                        <div className="text-right text-gray-500 font-medium">{item.locationName}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const updated = {
+                        ...configDb,
+                        schedules: generatedRosterPreview
+                      };
+                      await saveConfig(updated);
+                      setGeneratedRosterPreview(null);
+                      showTemporaryMessage('success', 'Roster approved and published! Technicians can now view their schedules.');
+                      setActiveTab('dashboard');
+                    }}
+                    className="w-full btn-primary bg-emerald-600 hover:bg-emerald-500 py-3 rounded-xl font-bold flex items-center justify-center gap-1.5 text-sm text-white"
+                  >
+                    <Check className="w-4.5 h-4.5" /> Approve & Publish Schedule
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* tab: Manager Payroll ledger */}
+      {activeTab === 'payroll' && currentUser?.role === 'manager' && (
+        <div className="space-y-6 flex-1 flex flex-col">
+          <div className="flex items-center gap-2 mb-2">
+            <button 
+              onClick={() => setActiveTab('dashboard')} 
+              className="btn-secondary py-2 px-3 bg-white/5 border border-glass text-slate-100"
+            >
+              <ArrowLeftRight className="w-4 h-4 rotate-180 inline mr-1" /> Back
+            </button>
+            <h2 className="text-lg font-bold text-white uppercase tracking-wider">Payroll Ledger</h2>
+          </div>
+
+          <div className="glass-panel space-y-4">
+            <div className="flex items-center justify-between border-b border-glass pb-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 font-bold">Employee List & Payouts</h3>
+              <span className="badge badge-emerald text-xs">Real-Time Balances</span>
+            </div>
+
+            <div className="space-y-3">
+              {configDb?.technicians.map(tech => {
+                const unpaidShifts = configDb.timecards.filter(
+                  (tc: any) => tc.technicianId === tech.id && tc.status === 'completed' && tc.payoutStatus === 'unpaid'
+                );
+                
+                const totalMs = unpaidShifts.reduce((acc: number, shift: any) => {
+                  return acc + (Date.parse(shift.clockOut) - Date.parse(shift.clockIn));
+                }, 0);
+                
+                const totalHours = totalMs / 3600000;
+                const earnings = totalHours * (tech.hourlyRate || 0);
+
+                return (
+                  <div key={tech.id} className="bg-white/5 p-4 rounded-xl border border-glass space-y-3.5">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <div className="font-bold text-sm text-slate-100">{tech.name}</div>
+                        <div className="text-xs text-gray-500 mt-0.5">{tech.specialty}</div>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-xs text-gray-400">Rate: </span>
+                        <span className="font-bold text-slate-200 text-sm">${tech.hourlyRate || 0}/hr</span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 text-xs bg-slate-950/40 p-2.5 rounded-lg border border-slate-900">
+                      <div>
+                        <span className="text-gray-500 block">Unpaid Hours:</span>
+                        <span className="font-semibold text-slate-300">{totalHours.toFixed(2)} hrs</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500 block">Payout Pending:</span>
+                        <span className="font-bold text-emerald-400">${earnings.toFixed(2)}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <div className="flex-1 relative">
+                        <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500 text-xs">
+                          $
+                        </span>
+                        <input 
+                          type="number"
+                          placeholder="Hourly Rate"
+                          defaultValue={tech.hourlyRate}
+                          onChange={(e) => {
+                            const newRate = parseFloat(e.target.value);
+                            if (!isNaN(newRate) && newRate > 0) {
+                              tech.hourlyRate = newRate;
+                            }
+                          }}
+                          className="pl-6 py-1.5 text-xs w-full bg-slate-900 border border-slate-700 text-white rounded-lg"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!configDb) return;
+                          const updatedTechs = configDb.technicians.map(t => {
+                            if (t.id === tech.id) {
+                              return { ...t, hourlyRate: tech.hourlyRate };
+                            }
+                            return t;
+                          });
+                          const updated = {
+                            ...configDb,
+                            technicians: updatedTechs
+                          };
+                          await saveConfig(updated);
+                          showTemporaryMessage('success', `Saved hourly rate for ${tech.name}.`);
+                        }}
+                        className="btn-secondary py-1.5 px-3 text-xs bg-white/5 border border-glass text-slate-100"
+                      >
+                        Save Rate
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!configDb) return;
+                          if (earnings <= 0) {
+                            showTemporaryMessage('error', 'Technician has no unpaid shifts.');
+                            return;
+                          }
+                          const updatedTimecards = configDb.timecards.map((tc: any) => {
+                            if (tc.technicianId === tech.id && tc.payoutStatus === 'unpaid') {
+                              return { ...tc, payoutStatus: 'paid' };
+                            }
+                            return tc;
+                          });
+                          const updated = {
+                            ...configDb,
+                            timecards: updatedTimecards
+                          };
+                          await saveConfig(updated);
+                          showTemporaryMessage('success', `Executed payout of $${earnings.toFixed(2)} to ${tech.name}. Balance reset to zero!`);
+                        }}
+                        disabled={earnings <= 0}
+                        className="btn-primary py-1.5 px-3 text-xs bg-emerald-600 hover:bg-emerald-500 text-white disabled:bg-slate-800 disabled:text-gray-500 disabled:cursor-not-allowed"
+                      >
+                        Mark Paid
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* tab: Manager Governance / Permissions / Add Tech */}
+      {activeTab === 'permissions' && currentUser?.role === 'manager' && (
+        <div className="space-y-6 flex-1 flex flex-col">
+          <div className="flex items-center gap-2 mb-2">
+            <button 
+              onClick={() => setActiveTab('dashboard')} 
+              className="btn-secondary py-2 px-3 bg-white/5 border border-glass text-slate-100"
+            >
+              <ArrowLeftRight className="w-4 h-4 rotate-180 inline mr-1" /> Back
+            </button>
+            <h2 className="text-lg font-bold text-white uppercase tracking-wider">Access Governance</h2>
+          </div>
+
+          {/* Register New Tech Form */}
+          <div className="glass-panel space-y-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+              <UserPlus className="w-4 h-4 text-violet-400" /> Register New Technician
+            </h3>
+
+            <div className="space-y-3.5 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="block text-gray-500 font-bold uppercase">Name</label>
+                  <input 
+                    type="text" 
+                    placeholder="Enter full name..."
+                    value={newTechName}
+                    onChange={e => setNewTechName(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-gray-500 font-bold uppercase">Email</label>
+                  <input 
+                    type="email" 
+                    placeholder="employee@domain.com"
+                    value={newTechEmail}
+                    onChange={e => setNewTechEmail(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="block text-gray-500 font-bold uppercase">Specialty</label>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. Alignment specialist"
+                    value={newTechSpecialty}
+                    onChange={e => setNewTechSpecialty(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-gray-500 font-bold uppercase">Home Location</label>
+                  <select
+                    value={newTechLocation}
+                    onChange={e => setNewTechLocation(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
+                  >
+                    {locations.map(loc => (
+                      <option key={loc.id} value={loc.id}>{loc.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!newTechName || !newTechEmail) {
+                    showTemporaryMessage('error', 'Please enter Name and Email.');
+                    return;
+                  }
+                  setCreatingTech(true);
+                  setInviteSentMsg('');
+                  try {
+                    const generatedPin = Math.floor(1000 + Math.random() * 9000).toString();
+                    const newTechObj = {
+                      id: 'tech-' + Math.random().toString(36).substring(2),
+                      name: newTechName,
+                      email: newTechEmail,
+                      pin: generatedPin,
+                      specialty: newTechSpecialty || 'General Technician',
+                      locationId: newTechLocation,
+                      hourlyRate: 20.00,
+                      canEditInventory: false,
+                      canPrintLabels: false,
+                      canShipOrders: true
+                    };
+
+                    const updatedTechs = [...(configDb?.technicians || []), newTechObj];
+                    const updated = {
+                      ...configDb,
+                      technicians: updatedTechs
+                    };
+
+                    await saveConfig(updated);
+
+                    const emailBody = `
+                      <h2>Welcome to Atlantic Tire King, ${newTechName}!</h2>
+                      <p>Your employee account has been created on the warehouse dashboard.</p>
+                      <p>To access your account, select your location and enter your 4-digit PIN:</p>
+                      <h1 style="color: #6d28d9; letter-spacing: 5px;">${generatedPin}</h1>
+                      <p>Please keep this PIN secure. You can clock in and out on site using this PIN.</p>
+                    `;
+
+                    const mailResponse = await fetch('/api/send-email', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json'
+                      },
+                      body: JSON.stringify({
+                        email: newTechEmail,
+                        subject: 'Your Atlantic Tire King Warehouse Access PIN',
+                        html: emailBody
+                      })
+                    });
+
+                    const mailResult = await mailResponse.json();
+                    if (mailResult.success) {
+                      setInviteSentMsg(`✓ Account created! PIN code (${generatedPin}) emailed to ${newTechEmail}`);
+                      showTemporaryMessage('success', 'Technician registered & invitation email dispatched!');
+                    } else {
+                      throw new Error(mailResult.error || 'Failed to send onboarding email');
+                    }
+
+                    // Reset form
+                    setNewTechName('');
+                    setNewTechEmail('');
+                    setNewTechSpecialty('');
+                  } catch (e: any) {
+                    showTemporaryMessage('error', `Registration failed: ${e.message}`);
+                  } finally {
+                    setCreatingTech(false);
+                  }
+                }}
+                disabled={creatingTech}
+                className="w-full btn-primary bg-violet-600 hover:bg-violet-500 py-3 font-bold flex items-center justify-center gap-1.5 text-slate-100 rounded-xl cursor-pointer"
+              >
+                {creatingTech ? <RotateCw className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4.5 h-4.5" />}
+                Register & Email Onboarding PIN
+              </button>
+
+              {inviteSentMsg && (
+                <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs rounded-xl font-medium">
+                  {inviteSentMsg}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Permissions Matrix Grid */}
+          <div className="glass-panel space-y-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+              <Shield className="w-4 h-4 text-violet-400" /> Access Governance Rules
+            </h3>
+
+            <div className="space-y-4">
+              {configDb?.technicians.map((tech: any) => (
+                <div key={tech.id} className="bg-white/5 p-4 rounded-xl border border-glass space-y-3.5 text-xs">
+                  <div className="flex justify-between items-center border-b border-glass/40 pb-2">
+                    <strong className="text-slate-200 text-sm">{tech.name}</strong>
+                    <span className="text-[10px] text-gray-500 font-mono font-bold">PIN: {tech.pin}</span>
+                  </div>
+
+                  <div className="space-y-3">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input 
+                        type="checkbox" 
+                        checked={tech.canEditInventory}
+                        onChange={async (e) => {
+                          if (!configDb) return;
+                          tech.canEditInventory = e.target.checked;
+                          const updated = {
+                            ...configDb,
+                            technicians: configDb.technicians.map(t => t.id === tech.id ? { ...t, canEditInventory: tech.canEditInventory } : t)
+                          };
+                          await saveConfig(updated);
+                          showTemporaryMessage('success', `Updated permissions for ${tech.name}`);
+                        }}
+                        className="rounded border-slate-700 bg-slate-900 text-violet-500 focus:ring-violet-500 w-4.5 h-4.5"
+                      />
+                      <div>
+                        <span className="text-slate-200 font-semibold">Can Edit Inventory</span>
+                        <span className="text-[10px] text-gray-500 block">Allows Receive (Intake), Move (Transfer), and Audit.</span>
+                      </div>
+                    </label>
+
+                    <label className="flex items-center gap-3 cursor-pointer pt-1">
+                      <input 
+                        type="checkbox" 
+                        checked={tech.canPrintLabels}
+                        onChange={async (e) => {
+                          if (!configDb) return;
+                          tech.canPrintLabels = e.target.checked;
+                          const updated = {
+                            ...configDb,
+                            technicians: configDb.technicians.map(t => t.id === tech.id ? { ...t, canPrintLabels: tech.canPrintLabels } : t)
+                          };
+                          await saveConfig(updated);
+                          showTemporaryMessage('success', `Updated permissions for ${tech.name}`);
+                        }}
+                        className="rounded border-slate-700 bg-slate-900 text-violet-500 focus:ring-violet-500 w-4.5 h-4.5"
+                      />
+                      <div>
+                        <span className="text-slate-200 font-semibold">Can Print Shipping Labels</span>
+                        <span className="text-[10px] text-gray-500 block">Allows clicking simulated print button on orders.</span>
+                      </div>
+                    </label>
+
+                    <label className="flex items-center gap-3 cursor-pointer pt-1">
+                      <input 
+                        type="checkbox" 
+                        checked={tech.canShipOrders}
+                        onChange={async (e) => {
+                          if (!configDb) return;
+                          tech.canShipOrders = e.target.checked;
+                          const updated = {
+                            ...configDb,
+                            technicians: configDb.technicians.map(t => t.id === tech.id ? { ...t, canShipOrders: tech.canShipOrders } : t)
+                          };
+                          await saveConfig(updated);
+                          showTemporaryMessage('success', `Updated permissions for ${tech.name}`);
+                        }}
+                        className="rounded border-slate-700 bg-slate-900 text-violet-500 focus:ring-violet-500 w-4.5 h-4.5"
+                      />
+                      <div>
+                        <span className="text-slate-200 font-semibold">Can Mark Orders as Shipped</span>
+                        <span className="text-[10px] text-gray-500 block">Allows submitting tracking IDs and resolving ship queues.</span>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
