@@ -1740,7 +1740,7 @@ export default function App() {
       <div className="flex-1 flex flex-col justify-center px-6 py-12 max-w-md mx-auto w-full">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center p-3 bg-violet-600/10 rounded-2xl border border-violet-500/20 mb-4">
-            <Package className="w-10 h-10 text-violet-500" />
+            <Package className="w-10 h-10 text-primary" />
           </div>
           <h1>OneCMD Warehouse</h1>
           <p className="text-gray-400 mt-2 text-sm">AI-Powered Warehouse Operations Terminal</p>
@@ -1752,7 +1752,7 @@ export default function App() {
             <select 
               value={activeLocation || ''} 
               onChange={e => setActiveLocation(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl py-2 px-3 focus:outline-none focus:ring-2 focus:ring-violet-500"
+              className="w-full"
             >
               <option value="" disabled>Select active store...</option>
               {locations.map(loc => (
@@ -1763,18 +1763,18 @@ export default function App() {
 
           <div className="space-y-2">
             <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Identify Yourself</label>
-            <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
+            <div className="grid grid-cols-2 gap-2 bg-glass-dark p-1 rounded-xl border border-glass">
               <button
                 type="button"
                 onClick={() => { setLoginMode('technician'); setAuthError(''); }}
-                className={`py-2 px-3 text-xs font-medium rounded-lg transition-all ${loginMode === 'technician' ? 'bg-violet-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                className={`py-2 px-3 text-xs font-medium rounded-lg transition-all ${loginMode === 'technician' ? 'bg-primary text-white' : 'text-gray-400 hover:text-slate-800'}`}
               >
                 Technician PIN
               </button>
               <button
                 type="button"
                 onClick={() => { setLoginMode('admin'); setAuthError(''); }}
-                className={`py-2 px-3 text-xs font-medium rounded-lg transition-all ${loginMode === 'admin' ? 'bg-violet-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                className={`py-2 px-3 text-xs font-medium rounded-lg transition-all ${loginMode === 'admin' ? 'bg-primary text-white' : 'text-gray-400 hover:text-slate-800'}`}
               >
                 Super Admin
               </button>
@@ -1794,7 +1794,7 @@ export default function App() {
                 placeholder={loginMode === 'admin' ? 'Enter admin password...' : 'Enter your 4-digit PIN...'} 
                 value={pinInput}
                 onChange={e => setPinInput(e.target.value)}
-                className="pl-11 w-full bg-slate-900 border border-slate-700 text-white rounded-xl py-2 px-3 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                className="pl-11 w-full"
               />
             </div>
           </div>
@@ -1806,7 +1806,7 @@ export default function App() {
             </div>
           )}
 
-          <button type="submit" className="w-full btn-primary bg-violet-600 hover:bg-violet-500 text-white font-semibold py-2.5 rounded-xl transition-colors">
+          <button type="submit" className="w-full btn-primary font-semibold py-2.5 rounded-xl transition-colors">
             {loginMode === 'admin' ? 'Enter Admin Dashboard' : 'Open Employee Portal'}
           </button>
         </form>
@@ -2316,8 +2316,8 @@ export default function App() {
                   onClick={() => setScanMode('sticker')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                     scanMode === 'sticker'
-                      ? 'bg-primary text-black shadow-lg shadow-primary/20'
-                      : 'bg-glass border border-glass text-gray-400 hover:text-white'
+                      ? 'bg-primary text-white shadow-lg'
+                      : 'bg-glass border border-glass text-gray-400 hover:text-slate-800'
                   }`}
                 >
                   📄 Paper Sticker
@@ -2326,8 +2326,8 @@ export default function App() {
                   onClick={() => setScanMode('sidewall')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                     scanMode === 'sidewall'
-                      ? 'bg-primary text-black shadow-lg shadow-primary/20'
-                      : 'bg-glass border border-glass text-gray-400 hover:text-white'
+                      ? 'bg-primary text-white shadow-lg'
+                      : 'bg-glass border border-glass text-gray-400 hover:text-slate-800'
                   }`}
                 >
                   ⭕ Sidewall Rubber
@@ -2336,8 +2336,8 @@ export default function App() {
                   onClick={() => setScanMode('bulk')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                     scanMode === 'bulk'
-                      ? 'bg-primary text-black shadow-lg shadow-primary/20'
-                      : 'bg-glass border border-glass text-gray-400 hover:text-white'
+                      ? 'bg-primary text-white shadow-lg'
+                      : 'bg-glass border border-glass text-gray-400 hover:text-slate-800'
                   }`}
                 >
                   📚 Bulk Stack
@@ -2415,7 +2415,7 @@ export default function App() {
                   <div className="receive-result-stack">
                     <div className="glass-panel space-y-4 glass-panel--success receive-specs-card">
                     <div className="flex items-center justify-between border-b border-glass pb-2">
-                      <h3 className="font-bold text-emerald-400">Extracted AI Specs</h3>
+                      <h3 className="font-bold text-emerald-600">Extracted AI Specs</h3>
                       {skuExists !== null && (
                         <span className={`badge ${skuExists ? 'badge-green' : 'badge-blue'}`}>
                           {skuExists ? 'Existing SKU' : 'New Catalog Product'}
@@ -2430,7 +2430,7 @@ export default function App() {
                             const val = e.target.value as 'tire' | 'wheel';
                             setExtractedSpecs({ ...extractedSpecs, product_type: val });
                           }}
-                          className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                          className="intake-field"
                         >
                           <option value="tire">🚗 Tire</option>
                           <option value="wheel">⭕ Wheel</option>
@@ -2509,7 +2509,7 @@ export default function App() {
                                         model: oldBrand
                                       });
                                     }}
-                                    className="text-[9px] bg-white/10 hover:bg-white/20 border border-glass text-slate-300 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1"
+                                    className="text-[9px] bg-white border border-glass text-slate-600 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1 hover:bg-glass-dark"
                                     title="Move brand name to model and enter brand manually"
                                   >
                                     Move to Model ⇄
@@ -2520,26 +2520,22 @@ export default function App() {
                                 <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
                               )}
                             </span>
-                            <input
-                              type="text"
+                            <textarea
+                              rows={2}
                               placeholder="Enter brand name..."
                               value={extractedSpecs.brand || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, brand: e.target.value })}
-                              className={`bg-glass-dark border rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 w-full mt-1.5 transition-all ${
-                                !extractedSpecs.brand?.trim() 
-                                  ? 'border-amber-500/50 focus:border-amber-500 focus:ring-amber-500/20' 
-                                  : 'border-glass focus:border-primary focus:ring-primary/20'
-                              }`}
+                              className={`intake-field intake-field--text ${!extractedSpecs.brand?.trim() ? 'intake-field--warn' : ''}`}
                             />
                           </div>
                           <div className="col-span-2">
                             <span className="spec-grid__label">Model</span>
-                            <input
-                              type="text"
+                            <textarea
+                              rows={2}
                               placeholder="Enter model name..."
                               value={extractedSpecs.model || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, model: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field intake-field--text"
                             />
                           </div>
                           <div className="col-span-2">
@@ -2549,7 +2545,7 @@ export default function App() {
                               placeholder="Enter finish/color..."
                               value={extractedSpecs.finish || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, finish: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field"
                             />
                           </div>
                           <div className="col-span-2">
@@ -2559,7 +2555,7 @@ export default function App() {
                               placeholder="Enter part number..."
                               value={extractedSpecs.part_number || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, part_number: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field"
                             />
                           </div>
                           <div className="col-span-2">
@@ -2569,7 +2565,7 @@ export default function App() {
                               placeholder="e.g. 18x8.5"
                               value={extractedSpecs.size || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, size: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field"
                             />
                           </div>
                           <div className="col-span-2">
@@ -2578,7 +2574,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.bolt_pattern || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, bolt_pattern: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field"
                             />
                           </div>
                           <div className="col-span-2">
@@ -2587,7 +2583,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.offset || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, offset: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field"
                             />
                           </div>
                           <div className="col-span-2">
@@ -2596,7 +2592,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.center_bore || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, center_bore: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field"
                             />
                           </div>
                         </>
@@ -2617,7 +2613,7 @@ export default function App() {
                                         model: oldBrand
                                       });
                                     }}
-                                    className="text-[9px] bg-white/10 hover:bg-white/20 border border-glass text-slate-300 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1"
+                                    className="text-[9px] bg-white border border-glass text-slate-600 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1 hover:bg-glass-dark"
                                     title="Move brand name to model and enter brand manually"
                                   >
                                     Move to Model ⇄
@@ -2628,26 +2624,22 @@ export default function App() {
                                 <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
                               )}
                             </span>
-                            <input
-                              type="text"
+                            <textarea
+                              rows={2}
                               placeholder="Enter brand name..."
                               value={extractedSpecs.brand || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, brand: e.target.value })}
-                              className={`bg-glass-dark border rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 w-full mt-1.5 transition-all ${
-                                !extractedSpecs.brand?.trim() 
-                                  ? 'border-amber-500/50 focus:border-amber-500 focus:ring-amber-500/20' 
-                                  : 'border-glass focus:border-primary focus:ring-primary/20'
-                              }`}
+                              className={`intake-field intake-field--text ${!extractedSpecs.brand?.trim() ? 'intake-field--warn' : ''}`}
                             />
                           </div>
                           <div className="col-span-2">
                             <span className="spec-grid__label">Model</span>
-                            <input
-                              type="text"
+                            <textarea
+                              rows={2}
                               placeholder="Enter model name..."
                               value={extractedSpecs.model || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, model: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field intake-field--text"
                             />
                           </div>
                           <div className="col-span-2">
@@ -2657,7 +2649,7 @@ export default function App() {
                               placeholder="e.g. 225/45R17"
                               value={extractedSpecs.size || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, size: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field"
                             />
                           </div>
                           <div className="col-span-2">
@@ -2668,14 +2660,14 @@ export default function App() {
                                 placeholder="LI"
                                 value={extractedSpecs.load_index || ''}
                                 onChange={(e) => setExtractedSpecs({ ...extractedSpecs, load_index: e.target.value })}
-                                className="bg-glass-dark border border-glass rounded-xl px-2 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-1/2 text-center"
+                                className="intake-field intake-field--compact w-1/2"
                               />
                               <input
                                 type="text"
                                 placeholder="SR"
                                 value={extractedSpecs.speed_rating || ''}
                                 onChange={(e) => setExtractedSpecs({ ...extractedSpecs, speed_rating: e.target.value })}
-                                className="bg-glass-dark border border-glass rounded-xl px-2 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-1/2 text-center"
+                                className="intake-field intake-field--compact w-1/2"
                               />
                             </div>
                           </div>
@@ -2685,7 +2677,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.load_range || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, load_range: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field"
                             />
                           </div>
                           <div className="col-span-2">
@@ -2699,7 +2691,7 @@ export default function App() {
                                   setWinterApproved(true);
                                 }
                               }}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field"
                             >
                               <option value="All-Season">All-Season</option>
                               <option value="Winter">Winter</option>
@@ -2713,7 +2705,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.ply_rating || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, ply_rating: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field"
                             />
                           </div>
                           <div className="col-span-2">
@@ -2722,7 +2714,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.dot_code || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, dot_code: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field"
                             />
                           </div>
                           <div className="col-span-2">
@@ -2731,7 +2723,7 @@ export default function App() {
                               type="text"
                               value={extractedSpecs.utqg || ''}
                               onChange={(e) => setExtractedSpecs({ ...extractedSpecs, utqg: e.target.value })}
-                              className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                              className="intake-field"
                             />
                           </div>
                         </>
@@ -2768,8 +2760,8 @@ export default function App() {
                       disabled={savingReceive || !quantityInput || !extractedSpecs?.brand?.trim()}
                       className={`w-full btn-primary py-4 transition-all ${
                         (!extractedSpecs?.brand?.trim() || !quantityInput)
-                          ? 'bg-slate-800 text-gray-500 border border-slate-700 cursor-not-allowed hover:bg-slate-800'
-                          : 'bg-primary text-black hover:bg-primary/95'
+                          ? 'bg-slate-200 text-gray-500 border border-slate-300 cursor-not-allowed hover:bg-slate-200'
+                          : 'bg-primary text-white hover:opacity-95'
                       }`}
                     >
                       {savingReceive ? <RotateCw className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
@@ -2855,7 +2847,7 @@ export default function App() {
                                   updated[idx] = { ...updated[idx], product_type: val };
                                   setBulkExtractedSpecs(updated);
                                 }}
-                                className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                className="intake-field"
                               >
                                 <option value="tire">🚗 Tire</option>
                                 <option value="wheel">⭕ Wheel</option>
@@ -2940,7 +2932,7 @@ export default function App() {
                                             };
                                             setBulkExtractedSpecs(updated);
                                           }}
-                                          className="text-[9px] bg-white/10 hover:bg-white/20 border border-glass text-slate-300 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1"
+                                          className="text-[9px] bg-white border border-glass text-slate-600 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1 hover:bg-glass-dark"
                                           title="Move brand name to model and enter brand manually"
                                         >
                                           Move to Model ⇄
@@ -2951,8 +2943,8 @@ export default function App() {
                                       <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
                                     )}
                                   </span>
-                                  <input
-                                    type="text"
+                                  <textarea
+                                    rows={2}
                                     placeholder="Enter brand name..."
                                     value={item.brand || ''}
                                     onChange={(e) => {
@@ -2960,17 +2952,13 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], brand: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className={`bg-glass-dark border rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 w-full mt-1.5 transition-all ${
-                                      !item.brand?.trim() 
-                                        ? 'border-amber-500/50 focus:border-amber-500 focus:ring-amber-500/20' 
-                                        : 'border-glass focus:border-primary focus:ring-primary/20'
-                                    }`}
+                                    className={`intake-field intake-field--text ${!item.brand?.trim() ? 'intake-field--warn' : ''}`}
                                   />
                                 </div>
                                 <div className="col-span-2">
                                   <span className="spec-grid__label">Model</span>
-                                  <input
-                                    type="text"
+                                  <textarea
+                                    rows={2}
                                     placeholder="Enter model name..."
                                     value={item.model || ''}
                                     onChange={(e) => {
@@ -2978,7 +2966,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], model: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field intake-field--text"
                                   />
                                 </div>
                                 <div className="col-span-2">
@@ -2992,7 +2980,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], finish: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field"
                                   />
                                 </div>
                                 <div className="col-span-2">
@@ -3006,7 +2994,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], part_number: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field"
                                   />
                                 </div>
                                 <div className="col-span-2">
@@ -3020,7 +3008,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], size: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field"
                                   />
                                 </div>
                                 <div className="col-span-2">
@@ -3033,7 +3021,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], bolt_pattern: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field"
                                   />
                                 </div>
                                 <div className="col-span-2">
@@ -3046,7 +3034,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], offset: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field"
                                   />
                                 </div>
                                 <div className="col-span-2">
@@ -3059,7 +3047,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], center_bore: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field"
                                   />
                                 </div>
                               </>
@@ -3082,7 +3070,7 @@ export default function App() {
                                             };
                                             setBulkExtractedSpecs(updated);
                                           }}
-                                          className="text-[9px] bg-white/10 hover:bg-white/20 border border-glass text-slate-300 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1"
+                                          className="text-[9px] bg-white border border-glass text-slate-600 font-bold px-1.5 py-0.5 rounded transition-all flex items-center gap-1 hover:bg-glass-dark"
                                           title="Move brand name to model and enter brand manually"
                                         >
                                           Move to Model ⇄
@@ -3093,8 +3081,8 @@ export default function App() {
                                       <span className="text-[10px] text-amber-400 font-bold uppercase animate-pulse">⚠️ Enter Brand Manually</span>
                                     )}
                                   </span>
-                                  <input
-                                    type="text"
+                                  <textarea
+                                    rows={2}
                                     placeholder="Enter brand name..."
                                     value={item.brand || ''}
                                     onChange={(e) => {
@@ -3102,17 +3090,13 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], brand: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className={`bg-glass-dark border rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 w-full mt-1.5 transition-all ${
-                                      !item.brand?.trim() 
-                                        ? 'border-amber-500/50 focus:border-amber-500 focus:ring-amber-500/20' 
-                                        : 'border-glass focus:border-primary focus:ring-primary/20'
-                                    }`}
+                                    className={`intake-field intake-field--text ${!item.brand?.trim() ? 'intake-field--warn' : ''}`}
                                   />
                                 </div>
                                 <div className="col-span-2">
                                   <span className="spec-grid__label">Model</span>
-                                  <input
-                                    type="text"
+                                  <textarea
+                                    rows={2}
                                     placeholder="Enter model name..."
                                     value={item.model || ''}
                                     onChange={(e) => {
@@ -3120,7 +3104,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], model: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field intake-field--text"
                                   />
                                 </div>
                                 <div className="col-span-2">
@@ -3134,7 +3118,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], size: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field"
                                   />
                                 </div>
                                 <div className="col-span-2">
@@ -3149,7 +3133,7 @@ export default function App() {
                                         updated[idx] = { ...updated[idx], load_index: e.target.value };
                                         setBulkExtractedSpecs(updated);
                                       }}
-                                      className="bg-glass-dark border border-glass rounded-xl px-2 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-1/2 text-center"
+                                      className="intake-field intake-field--compact w-1/2"
                                     />
                                     <input
                                       type="text"
@@ -3160,7 +3144,7 @@ export default function App() {
                                         updated[idx] = { ...updated[idx], speed_rating: e.target.value };
                                         setBulkExtractedSpecs(updated);
                                       }}
-                                      className="bg-glass-dark border border-glass rounded-xl px-2 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-1/2 text-center"
+                                      className="intake-field intake-field--compact w-1/2"
                                     />
                                   </div>
                                 </div>
@@ -3174,7 +3158,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], load_range: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field"
                                   />
                                 </div>
                                 <div className="col-span-2">
@@ -3187,7 +3171,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], season: val };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field"
                                   >
                                     <option value="All-Season">All-Season</option>
                                     <option value="Winter">Winter</option>
@@ -3205,7 +3189,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], ply_rating: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field"
                                   />
                                 </div>
                                 <div className="col-span-2">
@@ -3218,7 +3202,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], dot_code: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field"
                                   />
                                 </div>
                                 <div className="col-span-2">
@@ -3231,7 +3215,7 @@ export default function App() {
                                       updated[idx] = { ...updated[idx], utqg: e.target.value };
                                       setBulkExtractedSpecs(updated);
                                     }}
-                                    className="bg-glass-dark border border-glass rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 w-full mt-1.5 transition-all"
+                                    className="intake-field"
                                   />
                                 </div>
                               </>
@@ -3274,8 +3258,8 @@ export default function App() {
                       disabled={savingBulkReceive || bulkExtractedSpecs.length === 0 || bulkExtractedSpecs.some(item => !item.brand || !item.brand.trim())}
                       className={`w-full btn-primary py-4 mt-4 transition-all ${
                         (bulkExtractedSpecs.some(item => !item.brand || !item.brand.trim()) || bulkExtractedSpecs.length === 0)
-                          ? 'bg-slate-800 text-gray-500 border border-slate-700 cursor-not-allowed hover:bg-slate-800'
-                          : 'bg-primary text-black hover:bg-primary/95'
+                          ? 'bg-slate-200 text-gray-500 border border-slate-300 cursor-not-allowed hover:bg-slate-200'
+                          : 'bg-primary text-white hover:opacity-95'
                       }`}
                     >
                       {savingBulkReceive ? <RotateCw className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
