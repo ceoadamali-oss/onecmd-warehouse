@@ -193,6 +193,7 @@ export default function App() {
   const [newTechSpecialty, setNewTechSpecialty] = useState('');
   const [newTechLocation, setNewTechLocation] = useState('moncton');
   const [newTechHourlyRate, setNewTechHourlyRate] = useState('20.00');
+  const [newTechPreferredDay, setNewTechPreferredDay] = useState('None');
   const [creatingTech, setCreatingTech] = useState(false);
   const [inviteSentMsg, setInviteSentMsg] = useState('');
 
@@ -4227,10 +4228,29 @@ export default function App() {
                       
                       configDb?.technicians.forEach(tech => {
                         const quota = rosterDaysQuotas[tech.id] || 0;
-                        const shuffledDays = [...days].sort(() => 0.5 - Math.random());
-                        for (let i = 0; i < quota; i++) {
-                          const day = shuffledDays[i];
-                          const locObj = locations.find(l => l.id === tech.locationId) || locations[0];
+                        if (quota <= 0) return;
+
+                        const assignedDays = new Set<string>();
+                        
+                        // 1. Assign preferred day if specified and within valid weekdays
+                        const pref = tech.preferredDay;
+                        if (pref && pref !== 'None' && days.includes(pref)) {
+                          assignedDays.add(pref);
+                        }
+
+                        // 2. Fill the remaining quota randomly from non-preferred days
+                        const remainingQuota = quota - assignedDays.size;
+                        if (remainingQuota > 0) {
+                          const otherDays = days.filter(d => !assignedDays.has(d));
+                          const shuffled = [...otherDays].sort(() => 0.5 - Math.random());
+                          for (let i = 0; i < Math.min(remainingQuota, shuffled.length); i++) {
+                            assignedDays.add(shuffled[i]);
+                          }
+                        }
+
+                        // 3. Construct preview shifts list
+                        const locObj = locations.find(l => l.id === tech.locationId) || locations[0];
+                        Array.from(assignedDays).forEach(day => {
                           previewShifts.push({
                             id: `alloc-${tech.id}-${day}`,
                             technicianId: tech.id,
@@ -4241,8 +4261,12 @@ export default function App() {
                             date: scheduleWeekStart,
                             hours: '09:00 - 17:00'
                           });
-                        }
+                        });
                       });
+
+                      // 4. Sort shifts chronologically by weekday sequence
+                      const DAYS_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                      previewShifts.sort((a, b) => DAYS_ORDER.indexOf(a.day) - DAYS_ORDER.indexOf(b.day));
 
                       setGeneratedRosterPreview(previewShifts);
                       setGeneratingRoster(false);
@@ -4468,12 +4492,12 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="block text-gray-500 font-bold uppercase">Specialty</label>
                   <input 
                     type="text" 
-                    placeholder="e.g. Alignment"
+                    placeholder="e.g. Alignment specialist"
                     value={newTechSpecialty}
                     onChange={e => setNewTechSpecialty(e.target.value)}
                     className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
@@ -4491,6 +4515,9 @@ export default function App() {
                     ))}
                   </select>
                 </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="block text-gray-500 font-bold uppercase">Hourly Rate ($/hr)</label>
                   <input 
@@ -4501,6 +4528,22 @@ export default function App() {
                     onChange={e => setNewTechHourlyRate(e.target.value)}
                     className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
                   />
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-gray-500 font-bold uppercase">Preferred Shift Day</label>
+                  <select
+                    value={newTechPreferredDay}
+                    onChange={e => setNewTechPreferredDay(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
+                  >
+                    <option value="None">None (Random Assignments)</option>
+                    <option value="Monday">Monday</option>
+                    <option value="Tuesday">Tuesday</option>
+                    <option value="Wednesday">Wednesday</option>
+                    <option value="Thursday">Thursday</option>
+                    <option value="Friday">Friday</option>
+                    <option value="Saturday">Saturday</option>
+                  </select>
                 </div>
               </div>
 
@@ -4523,6 +4566,7 @@ export default function App() {
                       specialty: newTechSpecialty || 'General Technician',
                       locationId: newTechLocation,
                       hourlyRate: parseFloat(newTechHourlyRate) || 20.00,
+                      preferredDay: newTechPreferredDay || 'None',
                       canEditInventory: false,
                       canPrintLabels: false,
                       canShipOrders: true
@@ -4569,6 +4613,7 @@ export default function App() {
                     setNewTechEmail('');
                     setNewTechSpecialty('');
                     setNewTechHourlyRate('20.00');
+                    setNewTechPreferredDay('None');
                   } catch (e: any) {
                     showTemporaryMessage('error', `Registration failed: ${e.message}`);
                   } finally {
@@ -4661,6 +4706,24 @@ export default function App() {
                         ))}
                       </select>
                     </div>
+                    <div className="space-y-1 col-span-2">
+                      <label className="text-gray-500 block uppercase font-bold text-[9px]">Preferred Shift Day</label>
+                      <select 
+                        defaultValue={tech.preferredDay || 'None'}
+                        onChange={(e) => {
+                          tech.preferredDay = e.target.value;
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-1.5 px-2.5"
+                      >
+                        <option value="None">None (Random Assignments)</option>
+                        <option value="Monday">Monday</option>
+                        <option value="Tuesday">Tuesday</option>
+                        <option value="Wednesday">Wednesday</option>
+                        <option value="Thursday">Thursday</option>
+                        <option value="Friday">Friday</option>
+                        <option value="Saturday">Saturday</option>
+                      </select>
+                    </div>
                   </div>
 
                   <div className="flex gap-2">
@@ -4675,7 +4738,8 @@ export default function App() {
                             hourlyRate: tech.hourlyRate,
                             pin: tech.pin,
                             specialty: tech.specialty,
-                            locationId: tech.locationId
+                            locationId: tech.locationId,
+                            preferredDay: tech.preferredDay || 'None'
                           } : t)
                         };
                         await saveConfig(updated);
