@@ -730,7 +730,7 @@ export default function App() {
       return;
     }
 
-    if (!configDb) {
+    if (!configDb && loginMode !== 'admin') {
       setAuthError('System database loading. Please try again in a moment.');
       return;
     }
@@ -740,6 +740,7 @@ export default function App() {
 
     const selectedStoreObj = locations.find(l => l.id === activeLocation);
     const storeName = selectedStoreObj ? selectedStoreObj.name : activeLocation;
+    const credential = pinInput.trim();
 
     if (loginMode === 'admin') {
       try {
@@ -748,11 +749,15 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             mode: 'admin',
-            password: pinInput,
+            password: credential,
             locationId: activeLocation,
             locationName: storeName,
           }),
         });
+        if (res.status === 404) {
+          setAuthError('Login API not found. Run npm run dev (vercel dev), not dev:vite only.');
+          return;
+        }
         const data = await res.json();
         if (!res.ok) {
           setAuthError(data.error || 'Invalid Admin Password. Please try again.');
@@ -785,11 +790,15 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             mode: 'technician',
-            pin: pinInput,
+            pin: credential,
             locationId: activeLocation,
             locationName: storeName,
           }),
         });
+        if (res.status === 404) {
+          setAuthError('Login API not found. Run npm run dev (vercel dev), not dev:vite only.');
+          return;
+        }
         const data = await res.json();
         if (!res.ok) {
           setAuthError(data.error || 'Invalid 4-digit PIN code. Please try again.');

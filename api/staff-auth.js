@@ -1,4 +1,5 @@
 import { signStaffSession } from './_auth.js';
+import { verifyAdminPassword } from './_adminPassword.js';
 
 function loadTechnicianPins() {
   const raw = process.env.TECHNICIAN_PINS_JSON;
@@ -18,10 +19,6 @@ function loadTechnicianPins() {
   return [];
 }
 
-function getAdminPassword() {
-  return process.env.ADMIN_PASSWORD || process.env.SUPER_ADMIN_PASSWORD || '';
-}
-
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -38,11 +35,11 @@ export default async function handler(req, res) {
   const locName = locationName || locationId;
 
   if (mode === 'admin') {
-    const expected = getAdminPassword();
-    if (!expected) {
+    const check = verifyAdminPassword(password);
+    if (!check.configured) {
       return res.status(503).json({ error: 'Admin login is not configured.' });
     }
-    if (!password || password !== expected) {
+    if (!check.ok) {
       return res.status(401).json({ error: 'Invalid admin password.' });
     }
 
@@ -67,11 +64,12 @@ export default async function handler(req, res) {
     if (pins.length === 0) {
       return res.status(503).json({ error: 'Technician login is not configured.' });
     }
-    if (!pin) {
+    const pinValue = pin == null ? '' : String(pin).trim();
+    if (!pinValue) {
       return res.status(400).json({ error: 'PIN is required.' });
     }
 
-    const matched = pins.find((entry) => String(entry.pin) === String(pin));
+    const matched = pins.find((entry) => String(entry.pin) === pinValue);
     if (!matched) {
       return res.status(401).json({ error: 'Invalid PIN.' });
     }
