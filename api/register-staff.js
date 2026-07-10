@@ -1,5 +1,5 @@
 import { requireStaffAuth, isSuperAdminSession } from './_auth.js';
-import { loadStaffConfig, saveStaffConfig } from './_staffConfig.js';
+import { loadStaffConfig, normalizeStaffPin, saveStaffConfig } from './_staffConfig.js';
 
 async function sendOnboardingEmail(email, name, pin) {
   const resendKey = process.env.RESEND_API_KEY;
@@ -61,7 +61,7 @@ export default async function handler(req, res) {
 
   try {
     const config = await loadStaffConfig();
-    const generatedPin = Math.floor(1000 + Math.random() * 9000).toString();
+    const generatedPin = normalizeStaffPin(Math.floor(1000 + Math.random() * 9000).toString());
     const newTech = {
       id: 'tech-' + Math.random().toString(36).substring(2),
       name: name.trim(),

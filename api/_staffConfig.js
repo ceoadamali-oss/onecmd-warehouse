@@ -2,9 +2,27 @@ import { createClient } from '@supabase/supabase-js';
 
 const CONFIG_SKU = 'CONFIG-EMPLOYEES';
 
+/** Normalize technician PIN to 4-digit string (handles number JSON, whitespace, leading zeros). */
+export function normalizeStaffPin(pin) {
+  const digits = String(pin ?? '').replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.padStart(4, '0').slice(-4);
+}
+
+function getSupabaseEnv() {
+  const url =
+    process.env.VITE_SUPABASE_URL ||
+    process.env.SUPABASE_URL ||
+    '';
+  const key =
+    process.env.VITE_SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    '';
+  return { url, key };
+}
+
 function getSupabase() {
-  const url = process.env.VITE_SUPABASE_URL || '';
-  const key = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || '';
+  const { url, key } = getSupabaseEnv();
   if (!url || !key) return null;
   return createClient(url, key);
 }
@@ -64,21 +82,26 @@ export async function loadAllTechnicianPins() {
   }
 
   const dbPins = (config.technicians || [])
-    .filter((t) => t?.pin)
-    .map((t) => ({
-      pin: String(t.pin),
-      id: t.id,
-      name: t.name,
-      technicianId: t.id,
-      allowOffPremises: Boolean(t.allowOffPremises),
-    }));
+    .map((t) => {
+      const normalized = normalizeStaffPin(t?.pin);
+      if (!normalized) return null;
+      return {
+        pin: normalized,
+        id: t.id,
+        name: t.name,
+        technicianId: t.id,
+        allowOffPremises: Boolean(t.allowOffPremises),
+      };
+    })
+    .filter(Boolean);
 
   const byPin = new Map();
   for (const entry of envPins) {
-    if (entry?.pin) byPin.set(String(entry.pin), entry);
+    const normalized = normalizeStaffPin(entry?.pin);
+    if (normalized) byPin.set(normalized, { ...entry, pin: normalized });
   }
   for (const entry of dbPins) {
-    byPin.set(String(entry.pin), entry);
+    byPin.set(entry.pin, entry);
   }
   return Array.from(byPin.values());
 }

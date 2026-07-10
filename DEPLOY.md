@@ -9,6 +9,7 @@ Add these in **Vercel → onecmd-warehouse → Settings → Environment Variable
 | `VITE_SUPABASE_URL` | `https://gqapwytzpwpvwahfdeom.supabase.co` |
 | `VITE_SUPABASE_ANON_KEY` | *(from Supabase → Project Settings → API)* |
 | `VITE_SUPABASE_SERVICE_ROLE_KEY` | *(from Supabase → Project Settings → API — keep secret)* |
+| `SUPABASE_SERVICE_ROLE_KEY` | *(Optional alias)* Server API routes also accept this name if the `VITE_` variant is unset. **Required for Access Governance PIN login on production.** |
 | `SESSION_JWT_SECRET` | Random string, **min 32 characters** — signs staff session tokens |
 | `ADMIN_PASSWORD` or `SUPER_ADMIN_PASSWORD` | Super Admin login password (not hardcoded in app) |
 | `TECHNICIAN_PINS_JSON` | *(Optional bootstrap)* Legacy JSON array of technician PINs. New staff registered via Access Governance are stored in Supabase and work for login automatically. |
@@ -50,6 +51,8 @@ On **atk-custom-site** Vercel project, add the same `VITE_SUPABASE_URL` and `VIT
 3. Fill in Name + Email, then click **Register & Email Onboarding PIN**.
 4. The server saves the profile to Supabase and emails the 4-digit PIN (or shows it on screen if email is not configured).
 5. The new technician can log in immediately with that PIN — no manual env update needed.
+
+**If a registered technician gets "Invalid PIN" on production:** redeploy after ensuring `VITE_SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SERVICE_ROLE_KEY`) is set for Production in Vercel. Without it, login only sees legacy `TECHNICIAN_PINS_JSON` entries, not Supabase staff profiles.
 
 Staff profiles are stored in Supabase `tires_catalog` row `sku = 'CONFIG-EMPLOYEES'` inside the `location_counts.technicians[]` JSON array.
 

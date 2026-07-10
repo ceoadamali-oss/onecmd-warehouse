@@ -1,6 +1,6 @@
 import { signStaffSession } from './_auth.js';
 import { verifyAdminPassword } from './_adminPassword.js';
-import { loadAllTechnicianPins } from './_staffConfig.js';
+import { loadAllTechnicianPins, normalizeStaffPin } from './_staffConfig.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -47,12 +47,12 @@ export default async function handler(req, res) {
     if (pins.length === 0) {
       return res.status(503).json({ error: 'Technician login is not configured.' });
     }
-    const pinValue = pin == null ? '' : String(pin).trim();
+    const pinValue = normalizeStaffPin(pin);
     if (!pinValue) {
       return res.status(400).json({ error: 'PIN is required.' });
     }
 
-    const matched = pins.find((entry) => String(entry.pin) === pinValue);
+    const matched = pins.find((entry) => normalizeStaffPin(entry.pin) === pinValue);
     if (!matched) {
       return res.status(401).json({ error: 'Invalid PIN.' });
     }
