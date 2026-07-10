@@ -52,6 +52,9 @@ type AppUser = {
   technicianId?: string;
   isSuperAdmin?: boolean;
   allowOffPremises?: boolean;
+  canEditInventory?: boolean;
+  canPrintLabels?: boolean;
+  canShipOrders?: boolean;
 };
 
 function normalizeStaffPin(pin: string | number | null | undefined): string {
@@ -424,8 +427,8 @@ export default function App() {
         if (parsed.role === 'manager' && !parsed.technicianId && !parsed.isSuperAdmin) {
           parsed.isSuperAdmin = true;
           localStorage.setItem('onecmd_current_user', JSON.stringify(parsed));
-          setCurrentUser(parsed);
         }
+        setCurrentUser(parsed);
       } catch {
         /* ignore invalid session */
       }
@@ -922,6 +925,9 @@ export default function App() {
           location: activeLocation,
           technicianId: data.technicianId,
           allowOffPremises: Boolean(data.allowOffPremises),
+          canEditInventory: Boolean(data.canEditInventory),
+          canPrintLabels: Boolean(data.canPrintLabels),
+          canShipOrders: data.canShipOrders !== false,
         };
         setCurrentUser(workerUser);
         setLocationName(storeName);
@@ -2041,7 +2047,8 @@ export default function App() {
               {/* Role: Technician (Worker) dashboard sections */}
               {currentUser?.technicianId && !isSuperAdminUser && (() => {
                 const currentTechProfile = configDb?.technicians.find(t => t.id === currentUser.technicianId);
-                const canEditInventory = currentTechProfile?.canEditInventory ?? false;
+                const canEditInventory =
+                  currentUser.canEditInventory ?? currentTechProfile?.canEditInventory ?? false;
 
                 return (
                   <>

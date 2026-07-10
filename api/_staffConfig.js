@@ -103,6 +103,9 @@ export async function loadAllTechnicianPins() {
         name: t.name,
         technicianId: t.id,
         allowOffPremises: Boolean(t.allowOffPremises),
+        canEditInventory: Boolean(t.canEditInventory),
+        canPrintLabels: Boolean(t.canPrintLabels),
+        canShipOrders: t.canShipOrders !== false,
       };
     })
     .filter(Boolean);

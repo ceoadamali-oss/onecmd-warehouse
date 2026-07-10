@@ -71,6 +71,9 @@ export default async function handler(req, res) {
       name: matched.name || 'Technician',
       technicianId: matched.id || matched.technicianId,
       allowOffPremises: Boolean(matched.allowOffPremises),
+      canEditInventory: Boolean(matched.canEditInventory),
+      canPrintLabels: Boolean(matched.canPrintLabels),
+      canShipOrders: matched.canShipOrders !== false,
       locationId,
       locationName: locName,
     });
