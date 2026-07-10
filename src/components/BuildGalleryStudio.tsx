@@ -4,6 +4,27 @@ import { STORE_LOCATIONS } from '../lib/storeLocations';
 import { enhanceBuildPhoto, readFileAsDataUrl } from '../lib/imageStudio';
 import { authHeaders } from '../staffAuth';
 
+const SUSPENSION_OPTIONS = ['Stock', '2" Level', '3" Lift', 'Other'] as const;
+
+const EMPTY_FORM = {
+  vehicleYear: '',
+  vehicleMake: '',
+  vehicleModel: '',
+  vehicleTrim: '',
+  wheelLabel: '',
+  tireSize: '',
+  suspensionSetup: '',
+  suspensionSetupNotes: '',
+  liftKitBrand: '',
+  liftHeight: '',
+  noRub: false,
+  noTrim: false,
+  minorRub: false,
+  spacersRequired: false,
+  fitmentNotes: '',
+  caption: '',
+};
+
 type BuildGalleryStudioProps = {
   activeLocation: string;
   employeeName: string;
@@ -29,15 +50,7 @@ export function BuildGalleryStudio({
 
   const [form, setForm] = useState({
     storeId: activeLocation,
-    vehicleYear: '',
-    vehicleMake: '',
-    vehicleModel: '',
-    vehicleTrim: '',
-    wheelLabel: '',
-    tireSize: '',
-    liftKitBrand: '',
-    liftHeight: '',
-    caption: '',
+    ...EMPTY_FORM,
   });
 
   const handleEnhance = async () => {
@@ -85,6 +98,13 @@ export function BuildGalleryStudio({
           tireSize: form.tireSize,
           liftKitBrand: form.liftKitBrand,
           liftHeight: form.liftHeight,
+          suspensionSetup: form.suspensionSetup,
+          suspensionSetupNotes: form.suspensionSetupNotes,
+          noRub: form.noRub,
+          noTrim: form.noTrim,
+          minorRub: form.minorRub,
+          spacersRequired: form.spacersRequired,
+          fitmentNotes: form.fitmentNotes,
           caption: form.caption,
           addedBy: employeeName,
           lat: gpsCoords?.lat,
@@ -98,18 +118,7 @@ export function BuildGalleryStudio({
       setHeroPhoto(null);
       setEnhancedPhoto(null);
       setExtraPhotos([]);
-      setForm({
-        storeId: activeLocation,
-        vehicleYear: '',
-        vehicleMake: '',
-        vehicleModel: '',
-        vehicleTrim: '',
-        wheelLabel: '',
-        tireSize: '',
-        liftKitBrand: '',
-        liftHeight: '',
-        caption: '',
-      });
+      setForm({ storeId: activeLocation, ...EMPTY_FORM });
     } catch (e: any) {
       showMessage('error', e.message || 'Could not publish build');
     } finally {
@@ -135,7 +144,7 @@ export function BuildGalleryStudio({
       </div>
 
       <div className="glass-panel space-y-4">
-        <h3 className="text-xs font-semibold tracking-wider text-gray-400 uppercase">Vehicle & Build Details</h3>
+        <h3 className="text-xs font-semibold tracking-wider text-gray-400 uppercase">Vehicle</h3>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Store">
             <select
@@ -157,25 +166,74 @@ export function BuildGalleryStudio({
           <Field label="Model">
             <input value={form.vehicleModel} onChange={(e) => setForm({ ...form, vehicleModel: e.target.value })} placeholder="1500" className="w-full" />
           </Field>
-          <Field label="Trim">
+          <Field label="Trim" wide>
             <input value={form.vehicleTrim} onChange={(e) => setForm({ ...form, vehicleTrim: e.target.value })} placeholder="Sport" className="w-full" />
           </Field>
+        </div>
+      </div>
+
+      <div className="glass-panel space-y-4">
+        <h3 className="text-xs font-semibold tracking-wider text-gray-400 uppercase">Fitment</h3>
+        <div className="grid grid-cols-2 gap-3">
           <Field label="Wheels / Rims *">
             <input value={form.wheelLabel} onChange={(e) => setForm({ ...form, wheelLabel: e.target.value })} placeholder="Fuel Maverick 20&quot;" className="w-full" />
           </Field>
           <Field label="Tire Size">
             <input value={form.tireSize} onChange={(e) => setForm({ ...form, tireSize: e.target.value })} placeholder="275/55R20" className="w-full" />
           </Field>
-          <Field label="Lift Kit Brand">
+          <Field label="Suspension Setup">
+            <select
+              value={form.suspensionSetup}
+              onChange={(e) => setForm({ ...form, suspensionSetup: e.target.value })}
+              className="w-full"
+            >
+              <option value="">Select setup…</option>
+              {SUSPENSION_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>{opt}</option>
+              ))}
+            </select>
+          </Field>
+          {form.suspensionSetup === 'Other' && (
+            <Field label="Suspension Notes">
+              <input
+                value={form.suspensionSetupNotes}
+                onChange={(e) => setForm({ ...form, suspensionSetupNotes: e.target.value })}
+                placeholder="e.g. 4.5&quot; lift + struts"
+                className="w-full"
+              />
+            </Field>
+          )}
+          <Field label="Lift Kit Brand (optional)">
             <input value={form.liftKitBrand} onChange={(e) => setForm({ ...form, liftKitBrand: e.target.value })} placeholder="Rough Country" className="w-full" />
           </Field>
-          <Field label="Lift Height">
+          <Field label="Lift Height (optional)">
             <input value={form.liftHeight} onChange={(e) => setForm({ ...form, liftHeight: e.target.value })} placeholder="3 inch leveling" className="w-full" />
           </Field>
-          <Field label="Caption" wide>
-            <input value={form.caption} onChange={(e) => setForm({ ...form, caption: e.target.value })} placeholder="Leveling kit + 20s — Moncton install" className="w-full" />
-          </Field>
         </div>
+
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-gray-500 uppercase">Fitment Outcome</p>
+          <div className="flex flex-wrap gap-4">
+            <Checkbox label="No rub" checked={form.noRub} onChange={(checked) => setForm({ ...form, noRub: checked })} />
+            <Checkbox label="No trim" checked={form.noTrim} onChange={(checked) => setForm({ ...form, noTrim: checked })} />
+            <Checkbox label="Minor rub" checked={form.minorRub} onChange={(checked) => setForm({ ...form, minorRub: checked })} />
+            <Checkbox label="Spacers required" checked={form.spacersRequired} onChange={(checked) => setForm({ ...form, spacersRequired: checked })} />
+          </div>
+        </div>
+
+        <Field label="Fitment Notes" wide>
+          <textarea
+            value={form.fitmentNotes}
+            onChange={(e) => setForm({ ...form, fitmentNotes: e.target.value })}
+            placeholder="e.g. no rub, no trim, daily driver — great winter setup"
+            className="w-full min-h-[72px] resize-y"
+            rows={3}
+          />
+        </Field>
+
+        <Field label="Gallery Caption" wide>
+          <input value={form.caption} onChange={(e) => setForm({ ...form, caption: e.target.value })} placeholder="Leveling kit + 20s — Moncton install" className="w-full" />
+        </Field>
       </div>
 
       <div className="glass-panel space-y-4">
@@ -255,5 +313,27 @@ function Field({ label, children, wide }: { label: string; children: ReactNode; 
       <label className="block text-xs font-semibold text-gray-500 uppercase">{label}</label>
       {children}
     </div>
+  );
+}
+
+function Checkbox({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="inline-flex items-center gap-2 text-sm text-gray-300 cursor-pointer select-none">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="rounded border-gray-600"
+      />
+      {label}
+    </label>
   );
 }
