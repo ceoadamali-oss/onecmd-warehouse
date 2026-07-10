@@ -266,51 +266,8 @@ export default function App() {
       if (error) throw error;
 
       if (!data) {
-        // Initialize default config if first time run
-        const initialConfig = {
-          technicians: [
-            {
-              id: 'tech-ali',
-              name: 'Ali Baba',
-              pin: '1234',
-              email: 'ceoadamali@gmail.com',
-              specialty: 'Tires & Alignment',
-              hourlyRate: 25,
-              locationId: 'moncton',
-              canEditInventory: true,
-              canPrintLabels: true,
-              canShipOrders: true
-            },
-            {
-              id: 'tech-dave',
-              name: 'Dave Smith',
-              pin: '5678',
-              email: 'dave@atlantictireking.com',
-              specialty: 'Warehouse Logistics',
-              hourlyRate: 20,
-              locationId: 'oromocto',
-              canEditInventory: true,
-              canPrintLabels: false,
-              canShipOrders: true
-            }
-          ],
-          timecards: [],
-          schedules: []
-        };
-
-        await supabase.from('tires_catalog').insert({
-          sku: 'CONFIG-EMPLOYEES',
-          brand: 'SYSTEM',
-          size: 'N/A',
-          name: 'System Employee Configuration Database',
-          price: 0,
-          stock: 0,
-          type: 'System',
-          image: '',
-          location_counts: initialConfig
-        });
-
-        setConfigDb(initialConfig);
+        console.warn('CONFIG-EMPLOYEES row is missing in tires_catalog database! Please seed it manually.');
+        setConfigDb({ technicians: [], timecards: [], schedules: [] });
       } else {
         setConfigDb(data.location_counts || { technicians: [], timecards: [], schedules: [] });
       }
@@ -1379,16 +1336,8 @@ export default function App() {
   const handleSaveTransactionEdit = async () => {
     if (!editingTransaction || !activeLocation) return;
     
-    // Check PIN matches location manager pin
-    const managerPins: Record<string, string> = {
-      'moncton': '9999',
-      'oromocto': '8888',
-      'saint-john': '7777',
-      'fredericton': '6666'
-    };
-
-    if (managerPinInput !== managerPins[activeLocation]) {
-      setManagerPinError('Incorrect 4-digit Manager PIN. Override denied.');
+    if (!isOnline) {
+      setManagerPinError('Manager Override PIN cannot be verified offline. Please connect to the network.');
       return;
     }
 
@@ -1399,35 +1348,25 @@ export default function App() {
     }
 
     try {
-      if (isOnline) {
-        const response = await fetch('/api/edit-transaction', {
-          method: 'POST',
-          headers: authHeaders(),
-          body: JSON.stringify({
-            transactionId: editingTransaction.id,
-            newQuantity: newQty,
-            notes: `Corrected by ${currentUser?.name || 'Manager'} on override. Original: ${editingTransaction.quantity}`
-          })
-        });
+      const response = await fetch('/api/edit-transaction', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          transactionId: editingTransaction.id,
+          newQuantity: newQty,
+          notes: `Corrected by ${currentUser?.name || 'Manager'} on override. Original: ${editingTransaction.quantity}`,
+          managerPin: managerPinInput
+        })
+      });
 
-        if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(errText);
-        }
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || 'Server override rejected.');
+      }
 
-        const resData = await response.json();
-        if (!resData.success) {
-          throw new Error(resData.error || 'Server edit failed');
-        }
-      } else {
-        // Edit offline queue
-        const queue = offlineStorage.getQueue();
-        const found = queue.find(item => item.id === editingTransaction.id);
-        if (found) {
-          found.quantity = newQty;
-          found.notes = `Corrected locally. Original: ${editingTransaction.quantity}`;
-          localStorage.setItem('onecmd_offline_transactions', JSON.stringify(queue));
-        }
+      const resData = await response.json();
+      if (!resData.success) {
+        throw new Error(resData.error || 'Server edit failed');
       }
 
       showTemporaryMessage('success', 'Transaction successfully updated and inventory counts recalculated.');
@@ -1435,46 +1374,36 @@ export default function App() {
       setEditingTransaction(null);
       fetchRecentTransactions();
     } catch (e: any) {
-      setManagerPinError(`Failed to update transaction: ${e.message}`);
+      setManagerPinError(e.message);
     }
   };
 
   const handleSaveTransactionDelete = async () => {
     if (!editingTransaction || !activeLocation) return;
     
-    // Check PIN matches location manager pin
-    const managerPins: Record<string, string> = {
-      'moncton': '9999',
-      'oromocto': '8888',
-      'saint-john': '7777',
-      'fredericton': '6666'
-    };
-
-    if (managerPinInput !== managerPins[activeLocation]) {
-      setManagerPinError('Incorrect 4-digit Manager PIN. Override denied.');
+    if (!isOnline) {
+      setManagerPinError('Manager Override PIN cannot be verified offline. Please connect to the network.');
       return;
     }
 
     try {
-      if (isOnline) {
-        const response = await fetch('/api/undo-transaction', {
-          method: 'POST',
-          headers: authHeaders(),
-          body: JSON.stringify({ transactionId: editingTransaction.id })
-        });
+      const response = await fetch('/api/undo-transaction', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ 
+          transactionId: editingTransaction.id, 
+          managerPin: managerPinInput
+        })
+      });
 
-        if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(errText);
-        }
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || 'Server override rejected.');
+      }
 
-        const resData = await response.json();
-        if (!resData.success) {
-          throw new Error(resData.error || 'Server undo failed');
-        }
-      } else {
-        // Delete from offline queue
-        offlineStorage.dequeue(editingTransaction.id);
+      const resData = await response.json();
+      if (!resData.success) {
+        throw new Error(resData.error || 'Server undo failed');
       }
 
       showTemporaryMessage('success', 'Transaction deleted and inventory counts reverted.');
@@ -1482,7 +1411,7 @@ export default function App() {
       setEditingTransaction(null);
       fetchRecentTransactions();
     } catch (e: any) {
-      setManagerPinError(`Failed to delete transaction: ${e.message}`);
+      setManagerPinError(e.message);
     }
   };
 

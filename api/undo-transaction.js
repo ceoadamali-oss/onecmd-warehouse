@@ -77,7 +77,12 @@ export default async function handler(req, res) {
 
   if (!requireStaffAuth(req, res)) return;
 
-  const { transactionId } = req.body;
+  const { transactionId, managerPin } = req.body;
+  const expectedPin = process.env.ADMIN_PASSWORD || process.env.SUPER_ADMIN_PASSWORD || '5021';
+  if (!managerPin || String(managerPin) !== String(expectedPin)) {
+    return res.status(401).json({ error: 'Invalid Manager Override PIN. Access denied.' });
+  }
+
   if (!transactionId) {
     return res.status(400).json({ error: 'Missing transactionId parameter' });
   }

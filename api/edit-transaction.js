@@ -77,7 +77,12 @@ export default async function handler(req, res) {
 
   if (!requireStaffAuth(req, res)) return;
 
-  const { transactionId, newQuantity, notes } = req.body;
+  const { transactionId, newQuantity, notes, managerPin } = req.body;
+  const expectedPin = process.env.ADMIN_PASSWORD || process.env.SUPER_ADMIN_PASSWORD || '5021';
+  if (!managerPin || String(managerPin) !== String(expectedPin)) {
+    return res.status(401).json({ error: 'Invalid Manager Override PIN. Access denied.' });
+  }
+
   if (!transactionId || typeof newQuantity !== 'number' || newQuantity <= 0) {
     return res.status(400).json({ error: 'Missing or invalid parameters (transactionId, newQuantity)' });
   }
