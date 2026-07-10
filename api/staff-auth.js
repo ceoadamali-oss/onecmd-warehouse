@@ -1,4 +1,5 @@
 import { signStaffSession } from './_auth.js';
+import { getAdminPassword } from './_adminPassword.js';
 
 function loadTechnicianPins() {
   const raw = process.env.TECHNICIAN_PINS_JSON;
@@ -16,10 +17,6 @@ function loadTechnicianPins() {
     /* ignore */
   }
   return [];
-}
-
-function getAdminPassword() {
-  return process.env.ADMIN_PASSWORD || process.env.SUPER_ADMIN_PASSWORD || '';
 }
 
 export default async function handler(req, res) {
@@ -42,7 +39,8 @@ export default async function handler(req, res) {
     if (!expected) {
       return res.status(503).json({ error: 'Admin login is not configured.' });
     }
-    if (!password || password !== expected) {
+    const submitted = typeof password === 'string' ? password.trim() : password;
+    if (!submitted || submitted !== expected) {
       return res.status(401).json({ error: 'Invalid admin password.' });
     }
 

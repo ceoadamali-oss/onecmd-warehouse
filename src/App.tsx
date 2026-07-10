@@ -273,6 +273,7 @@ export default function App() {
       }
     } catch (e: any) {
       console.error('Failed to load system configuration:', e);
+      setConfigDb({ technicians: [], timecards: [], schedules: [] });
     }
   };
 
@@ -730,8 +731,14 @@ export default function App() {
       return;
     }
 
-    if (!configDb) {
+    if (!configDb && loginMode !== 'admin') {
       setAuthError('System database loading. Please try again in a moment.');
+      return;
+    }
+
+    const credential = pinInput.trim();
+    if (!credential) {
+      setAuthError(loginMode === 'admin' ? 'Please enter the admin password.' : 'Please enter your PIN.');
       return;
     }
 
@@ -748,12 +755,22 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             mode: 'admin',
-            password: pinInput,
+            password: credential,
             locationId: activeLocation,
             locationName: storeName,
           }),
         });
-        const data = await res.json();
+        let data: { error?: string; token?: string; name?: string };
+        try {
+          data = await res.json();
+        } catch {
+          setAuthError(
+            res.status === 404
+              ? 'Login API unavailable. Start the app with "npm run dev" (uses vercel dev for API routes).'
+              : 'Login failed. Please try again.',
+          );
+          return;
+        }
         if (!res.ok) {
           setAuthError(data.error || 'Invalid Admin Password. Please try again.');
           return;
@@ -785,12 +802,22 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             mode: 'technician',
-            pin: pinInput,
+            pin: credential,
             locationId: activeLocation,
             locationName: storeName,
           }),
         });
-        const data = await res.json();
+        let data: { error?: string; token?: string; name?: string; technicianId?: string };
+        try {
+          data = await res.json();
+        } catch {
+          setAuthError(
+            res.status === 404
+              ? 'Login API unavailable. Start the app with "npm run dev" (uses vercel dev for API routes).'
+              : 'Login failed. Please try again.',
+          );
+          return;
+        }
         if (!res.ok) {
           setAuthError(data.error || 'Invalid 4-digit PIN code. Please try again.');
           return;
