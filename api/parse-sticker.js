@@ -28,9 +28,9 @@ export default async function handler(req, res) {
   }
 
   const apiKey = getOpenAIKey();
+
   if (!apiKey) {
-    const envKeys = Object.keys(process.env).filter(k => k.includes('OPENAI') || k.includes('KEY')).join(', ');
-    return res.status(500).json({ error: `OpenAI API key configuration error on server. Available keys: ${envKeys}` });
+    return res.status(500).json({ error: 'OpenAI API key configuration error on server.' });
   }
 
   const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');

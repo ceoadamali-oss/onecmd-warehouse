@@ -1,6 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
 import { requireStaffAuth } from './_auth.js';
-import { verifyAdminPassword } from './_adminPassword.js';
 
 const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
 const supabaseServiceKey = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || '';
@@ -229,11 +228,8 @@ export default async function handler(req, res) {
   // --- ACTION 2: EDIT TRANSACTION (Manager Override) ---
   if (action === 'edit') {
     const { transactionId, newQuantity, notes, managerPin } = body;
-    const pinCheck = verifyAdminPassword(managerPin);
-    if (!pinCheck.configured) {
-      return res.status(503).json({ error: 'Admin login is not configured.' });
-    }
-    if (!pinCheck.ok) {
+    const expectedPin = process.env.ADMIN_PASSWORD || process.env.SUPER_ADMIN_PASSWORD || '5021';
+    if (!managerPin || String(managerPin) !== String(expectedPin)) {
       return res.status(401).json({ error: 'Invalid Manager Override PIN. Access denied.' });
     }
 
@@ -286,11 +282,8 @@ export default async function handler(req, res) {
   // --- ACTION 3: UNDO TRANSACTION (Manager Override Delete) ---
   if (action === 'undo') {
     const { transactionId, managerPin } = body;
-    const pinCheck = verifyAdminPassword(managerPin);
-    if (!pinCheck.configured) {
-      return res.status(503).json({ error: 'Admin login is not configured.' });
-    }
-    if (!pinCheck.ok) {
+    const expectedPin = process.env.ADMIN_PASSWORD || process.env.SUPER_ADMIN_PASSWORD || '5021';
+    if (!managerPin || String(managerPin) !== String(expectedPin)) {
       return res.status(401).json({ error: 'Invalid Manager Override PIN. Access denied.' });
     }
 

@@ -44,9 +44,7 @@ On **atk-custom-site** Vercel project, add the same `VITE_SUPABASE_URL` and `VIT
 
 ## Local development
 
-Run **`npm run dev`** (starts `vercel dev`, which serves both the Vite UI and `/api/*` routes). Plain `npm run dev:vite` does **not** expose API routes — Super Admin login will fail with a 404.
-
-Add to `.env` (server-side vars are read by `vercel dev` / API routes):
+Add to `.env` (server-side vars are read by Vercel dev / API routes):
 
 ```
 SESSION_JWT_SECRET=dev-only-session-secret-change-before-production!!
