@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { requireStaffAuth } from './_auth.js';
 
 const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
 const supabaseServiceKey = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || '';
@@ -63,7 +64,7 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization'
   );
 
   if (req.method === 'OPTIONS') {
@@ -79,6 +80,8 @@ export default async function handler(req, res) {
     console.error('❌ Supabase credentials missing in serverless environment variables!');
     return res.status(500).json({ error: 'Database configuration error. Please check your Vercel Environment Variables.' });
   }
+
+  if (!requireStaffAuth(req, res)) return;
 
   // Handle both { tx, newProduct } payload or raw transaction payload (for backward compatibility)
   const body = req.body || {};

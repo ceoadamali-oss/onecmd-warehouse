@@ -6,6 +6,7 @@ import {
   processProductStudioPhoto,
   readFileAsDataUrl,
 } from '../lib/imageStudio';
+import { authHeaders } from '../staffAuth';
 
 export type MissingProduct = {
   sku: string;
@@ -135,7 +136,7 @@ export function ProductPhotoStudio({
     try {
       const res = await fetch('/api/upload-product-image', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify({
           sku: selected.sku,
           productType: selected.productType,
@@ -143,7 +144,6 @@ export function ProductPhotoStudio({
           lat: gpsCoords?.lat,
           lng: gpsCoords?.lng,
           employeeId: employeeName,
-          isSuperAdmin,
         }),
       });
       const data = await res.json();

@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { assertOnPremises } from './_geofence.js';
+import { isSuperAdminSession, requireStaffAuth } from './_auth.js';
 
 const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
 const supabaseServiceKey = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || '';
@@ -14,19 +15,22 @@ function base64ToBuffer(base64Str) {
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
   if (!supabase) return res.status(500).json({ error: 'Server database configuration missing.' });
 
+  const session = requireStaffAuth(req, res);
+  if (!session) return;
+
   try {
-    const { sku, productType, imageData, lat, lng, employeeId, isSuperAdmin } = req.body || {};
+    const { sku, productType, imageData, lat, lng, employeeId } = req.body || {};
     if (!sku || !productType || !imageData) {
       return res.status(400).json({ error: 'sku, productType, and imageData are required.' });
     }
 
-    const geo = assertOnPremises(lat, lng, { skip: !!isSuperAdmin });
+    const geo = assertOnPremises(lat, lng, { skip: isSuperAdminSession(session) });
     if (!geo.ok) return res.status(403).json({ error: geo.error });
 
     const skuKey = String(sku).toUpperCase().trim();

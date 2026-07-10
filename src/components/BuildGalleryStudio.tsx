@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { ArrowLeft, Camera, CheckCircle, Plus, RotateCw, Trash2, Truck } from 'lucide-react';
 import { STORE_LOCATIONS } from '../lib/storeLocations';
 import { enhanceBuildPhoto, readFileAsDataUrl } from '../lib/imageStudio';
+import { authHeaders } from '../staffAuth';
 
 type BuildGalleryStudioProps = {
   activeLocation: string;
@@ -71,7 +72,7 @@ export function BuildGalleryStudio({
     try {
       const res = await fetch('/api/upload-gallery-build', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify({
           imageData: enhancedPhoto,
           extraImages: extraPhotos,
@@ -88,7 +89,6 @@ export function BuildGalleryStudio({
           addedBy: employeeName,
           lat: gpsCoords?.lat,
           lng: gpsCoords?.lng,
-          isSuperAdmin,
         }),
       });
       const data = await res.json();

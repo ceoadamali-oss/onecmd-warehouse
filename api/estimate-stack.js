@@ -1,3 +1,5 @@
+import { requireStaffAuth } from './_auth.js';
+
 export default async function handler(req, res) {
   // CORS Headers
   res.setHeader('Access-Control-Allow-Credentials', true);
@@ -17,14 +19,14 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  if (!requireStaffAuth(req, res)) return;
+
   const { base64Image } = req.body;
   if (!base64Image) {
     return res.status(400).json({ error: 'Missing base64Image' });
   }
 
-  // Deobfuscate API Key at runtime
-  const encodedKey = 'c2stcHJvai1CbU9xU0NJU0JYV3pLT0ZpbjQwM1FhRVRjQmw5RmV4QlpRT3VGOS1KTlZQRldVcmFRSUhzUDJBeTN5UzM2U19makNZdkFCRFhuRVQzQmxia0ZKZm5EZHB0SGZ2eG5nZ0VwQVFJSndYanpMem9Lemo2WTJVYkV6aEdsX19YTkM3Sld6R29sclYyckd6NkNINWJDbXBSQUFpcWFOVUE=';
-  const apiKey = Buffer.from(encodedKey, 'base64').toString('utf-8');
+  const apiKey = process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
     return res.status(500).json({ error: 'OpenAI API key configuration error on server.' });

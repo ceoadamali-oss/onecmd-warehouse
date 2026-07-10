@@ -41,6 +41,7 @@ import { PremisesLockOverlay } from './components/PremisesLockOverlay';
 import { ProductPhotoStudio } from './components/ProductPhotoStudio';
 import { BuildGalleryStudio } from './components/BuildGalleryStudio';
 import { GEOFENCE_RADIUS_KM, STORE_LOCATIONS, getPremisesStatus, isCatalogImageMissing } from './lib/storeLocations';
+import { authHeaders, clearStaffToken, setStaffToken } from './staffAuth';
 
 type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs' | 'timecard' | 'workforce' | 'schedule' | 'payroll' | 'permissions' | 'product-photos' | 'build-gallery';
 
@@ -784,12 +785,29 @@ export default function App() {
     const storeName = selectedStoreObj ? selectedStoreObj.name : activeLocation;
 
     if (loginMode === 'admin') {
-      if (pinInput === '111' || pinInput === 'adam2026') {
+      try {
+        const res = await fetch('/api/staff-auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'admin',
+            password: pinInput,
+            locationId: activeLocation,
+            locationName: storeName,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setAuthError(data.error || 'Invalid Admin Password. Please try again.');
+          return;
+        }
+
+        setStaffToken(data.token);
         const mgrUser: AppUser = {
           role: 'manager',
-          name: 'Adam Ali (Super Admin)',
+          name: data.name || 'Super Admin',
           location: activeLocation,
-          isSuperAdmin: true
+          isSuperAdmin: true,
         };
         setCurrentUser(mgrUser);
         setLocationName(storeName);
@@ -800,18 +818,33 @@ export default function App() {
         setPinInput('');
         setAuthError('');
         showTemporaryMessage('success', 'Logged in successfully as Super Admin.');
-      } else {
-        setAuthError('Invalid Admin Password. Please try again.');
+      } catch {
+        setAuthError('Login failed. Please try again.');
       }
     } else {
-      // Find technician with matching PIN
-      const techUser = configDb.technicians.find((t: any) => t.pin === pinInput);
-      if (techUser) {
+      try {
+        const res = await fetch('/api/staff-auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'technician',
+            pin: pinInput,
+            locationId: activeLocation,
+            locationName: storeName,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setAuthError(data.error || 'Invalid 4-digit PIN code. Please try again.');
+          return;
+        }
+
+        setStaffToken(data.token);
         const workerUser: AppUser = {
           role: 'worker',
-          name: techUser.name,
+          name: data.name,
           location: activeLocation,
-          technicianId: techUser.id
+          technicianId: data.technicianId,
         };
         setCurrentUser(workerUser);
         setLocationName(storeName);
@@ -820,9 +853,9 @@ export default function App() {
         localStorage.setItem('onecmd_current_user', JSON.stringify(workerUser));
         setPinInput('');
         setAuthError('');
-        showTemporaryMessage('success', `Welcome back, ${techUser.name}! Logged in at ${storeName}.`);
-      } else {
-        setAuthError('Invalid 4-digit PIN code. Please try again.');
+        showTemporaryMessage('success', `Welcome back, ${data.name}! Logged in at ${storeName}.`);
+      } catch {
+        setAuthError('Login failed. Please try again.');
       }
     }
   };
@@ -831,6 +864,7 @@ export default function App() {
     localStorage.removeItem('onecmd_active_location');
     localStorage.removeItem('onecmd_active_location_name');
     localStorage.removeItem('onecmd_current_user');
+    clearStaffToken();
     setActiveLocation(null);
     setLocationName('');
     setCurrentUser(null);
@@ -1108,9 +1142,7 @@ export default function App() {
   const syncTransactionWithServer = async (tx: any, newProduct?: any) => {
     const response = await fetch('/api/sync-transaction', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: authHeaders(),
       body: JSON.stringify({ tx, newProduct })
     });
 
@@ -1370,9 +1402,7 @@ export default function App() {
       if (isOnline) {
         const response = await fetch('/api/edit-transaction', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: authHeaders(),
           body: JSON.stringify({
             transactionId: editingTransaction.id,
             newQuantity: newQty,
@@ -1429,9 +1459,7 @@ export default function App() {
       if (isOnline) {
         const response = await fetch('/api/undo-transaction', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: authHeaders(),
           body: JSON.stringify({ transactionId: editingTransaction.id })
         });
 
@@ -1540,9 +1568,7 @@ export default function App() {
 
       const response = await fetch('/api/undo-transaction', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: authHeaders(),
         body: JSON.stringify({ transactionId: tx.id })
       });
 
@@ -1639,9 +1665,7 @@ export default function App() {
       if (isOnline) {
         const response = await fetch('/api/verify-transfer', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: authHeaders(),
           body: JSON.stringify({
             transactionId: selectedTransfer.id,
             receivedQuantity: qty,

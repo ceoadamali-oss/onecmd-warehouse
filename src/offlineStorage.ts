@@ -14,6 +14,18 @@ export interface PendingTransaction {
 }
 
 const OFFLINE_QUEUE_KEY = 'onecmd_offline_transactions';
+const TOKEN_KEY = 'onecmd_staff_token';
+
+function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  try {
+    const token = sessionStorage.getItem(TOKEN_KEY);
+    if (token) headers.Authorization = `Bearer ${token}`;
+  } catch {
+    /* ignore */
+  }
+  return headers;
+}
 
 export const offlineStorage = {
   // Get all pending transactions stored locally
@@ -65,9 +77,7 @@ export const offlineStorage = {
       try {
         const response = await fetch('/api/sync-transaction', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: authHeaders(),
           body: JSON.stringify(tx)
         });
 
