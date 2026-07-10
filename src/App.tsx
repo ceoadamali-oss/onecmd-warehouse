@@ -251,6 +251,9 @@ export default function App() {
   const [newTechPreferredDay, setNewTechPreferredDay] = useState('None');
   const [creatingTech, setCreatingTech] = useState(false);
   const [inviteSentMsg, setInviteSentMsg] = useState('');
+  const [profileUpdateState, setProfileUpdateState] = useState<Record<string, 'idle' | 'loading' | 'updated' | 'error'>>({});
+  const [configRevision, setConfigRevision] = useState(0);
+  const [profileSaveState, setProfileSaveState] = useState<Record<string, 'idle' | 'saving' | 'saved'>>({});
 
   // Manager Weekly Schedule states
   const [rosterDaysQuotas, setRosterDaysQuotas] = useState<Record<string, number>>({});
@@ -266,6 +269,7 @@ export default function App() {
 
   const timerRef = useRef<any>(null);
   const heartbeatIntervalRef = useRef<any>(null);
+  const profileResetTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   /** Super admin = manager login (password), not PIN staff */
   const isSuperAdminUser = Boolean(
@@ -303,18 +307,37 @@ export default function App() {
     }
   };
 
-  const saveConfig = async (updatedConfig: any) => {
+  const saveConfig = async (updatedConfig: any): Promise<boolean> => {
     try {
+      const res = await fetch('/api/update-staff-config', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ config: updatedConfig }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || `Save failed (${res.status})`);
+      }
       setConfigDb(updatedConfig);
-      const { error } = await supabase
-        .from('tires_catalog')
-        .update({ location_counts: updatedConfig })
-        .eq('sku', 'CONFIG-EMPLOYEES');
-      if (error) throw error;
+      return true;
     } catch (e: any) {
       showTemporaryMessage('error', `Failed to sync database: ${e.message}`);
+      return false;
     }
   };
+
+  const mergeTechnicianProfile = (existing: any, draft: any) => ({
+    ...existing,
+    hourlyRate: draft.hourlyRate ?? existing.hourlyRate,
+    pin: draft.pin ?? existing.pin,
+    specialty: draft.specialty ?? existing.specialty,
+    locationId: draft.locationId ?? existing.locationId,
+    preferredDay: draft.preferredDay || existing.preferredDay || 'None',
+    allowOffPremises: Boolean(draft.allowOffPremises),
+    canEditInventory: Boolean(draft.canEditInventory),
+    canPrintLabels: Boolean(draft.canPrintLabels),
+    canShipOrders: draft.canShipOrders !== undefined ? Boolean(draft.canShipOrders) : Boolean(existing.canShipOrders),
+  });
 
   // Monitor network status & offline queue
   useEffect(() => {
@@ -5091,7 +5114,7 @@ export default function App() {
 
             <div className="space-y-4">
               {configDb?.technicians.map((tech: any) => (
-                <div key={tech.id} className="bg-white/5 p-4 rounded-xl border border-glass space-y-3.5 text-xs">
+                <div key={`${tech.id}-${configRevision}`} className="bg-white/5 p-4 rounded-xl border border-glass space-y-3.5 text-xs">
                   <div className="flex justify-between items-center border-b border-glass/40 pb-2">
                     <strong className="text-slate-200 text-sm">{tech.name}</strong>
                     <span className="text-[10px] text-gray-500 font-mono">Specialty: {tech.specialty}</span>
@@ -5177,25 +5200,40 @@ export default function App() {
                   <div className="flex gap-2">
                     <button
                       type="button"
+                      disabled={profileSaveState[tech.id] === 'saving'}
                       onClick={async () => {
                         if (!configDb) return;
+                        setProfileSaveState((s) => ({ ...s, [tech.id]: 'saving' }));
                         const updated = {
                           ...configDb,
-                          technicians: configDb.technicians.map(t => t.id === tech.id ? { 
-                            ...t, 
-                            hourlyRate: tech.hourlyRate,
-                            pin: tech.pin,
-                            specialty: tech.specialty,
-                            locationId: tech.locationId,
-                            preferredDay: tech.preferredDay || 'None'
-                          } : t)
+                          technicians: configDb.technicians.map((t) =>
+                            t.id === tech.id ? mergeTechnicianProfile(t, tech) : t
+                          ),
                         };
-                        await saveConfig(updated);
-                        showTemporaryMessage('success', `Successfully updated profile details for ${tech.name}.`);
+                        const ok = await saveConfig(updated);
+                        if (ok) {
+                          await loadConfig();
+                          setConfigRevision((r) => r + 1);
+                          setProfileSaveState((s) => ({ ...s, [tech.id]: 'saved' }));
+                          window.setTimeout(() => {
+                            setProfileSaveState((s) => ({ ...s, [tech.id]: 'idle' }));
+                          }, 2000);
+                        } else {
+                          setProfileSaveState((s) => ({ ...s, [tech.id]: 'idle' }));
+                        }
                       }}
-                      className="btn-primary py-1.5 px-3 text-xs bg-violet-600 hover:bg-violet-500 text-white rounded-lg cursor-pointer"
+                      className="btn-primary py-1.5 px-3 text-xs bg-violet-600 hover:bg-violet-500 text-white rounded-lg cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1.5"
                     >
-                      Update Profile Info
+                      {profileSaveState[tech.id] === 'saving' ? (
+                        <>
+                          <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                          Saving...
+                        </>
+                      ) : profileSaveState[tech.id] === 'saved' ? (
+                        'Updated'
+                      ) : (
+                        'Update Profile Info'
+                      )}
                     </button>
                   </div>
 
@@ -5204,17 +5242,8 @@ export default function App() {
                       <input
                         type="checkbox"
                         checked={Boolean(tech.allowOffPremises)}
-                        onChange={async (e) => {
-                          if (!configDb) return;
+                        onChange={(e) => {
                           tech.allowOffPremises = e.target.checked;
-                          const updated = {
-                            ...configDb,
-                            technicians: configDb.technicians.map((t) =>
-                              t.id === tech.id ? { ...t, allowOffPremises: tech.allowOffPremises } : t
-                            ),
-                          };
-                          await saveConfig(updated);
-                          showTemporaryMessage('success', `Updated permissions for ${tech.name}`);
                         }}
                         className="rounded border-slate-700 bg-slate-900 text-violet-500 focus:ring-violet-500 w-4.5 h-4.5"
                       />
@@ -5229,16 +5258,9 @@ export default function App() {
                     <label className="flex items-center gap-3 cursor-pointer pt-1">
                       <input 
                         type="checkbox" 
-                        checked={tech.canEditInventory}
-                        onChange={async (e) => {
-                          if (!configDb) return;
+                        checked={Boolean(tech.canEditInventory)}
+                        onChange={(e) => {
                           tech.canEditInventory = e.target.checked;
-                          const updated = {
-                            ...configDb,
-                            technicians: configDb.technicians.map(t => t.id === tech.id ? { ...t, canEditInventory: tech.canEditInventory } : t)
-                          };
-                          await saveConfig(updated);
-                          showTemporaryMessage('success', `Updated permissions for ${tech.name}`);
                         }}
                         className="rounded border-slate-700 bg-slate-900 text-violet-500 focus:ring-violet-500 w-4.5 h-4.5"
                       />
@@ -5251,16 +5273,9 @@ export default function App() {
                     <label className="flex items-center gap-3 cursor-pointer pt-1">
                       <input 
                         type="checkbox" 
-                        checked={tech.canPrintLabels}
-                        onChange={async (e) => {
-                          if (!configDb) return;
+                        checked={Boolean(tech.canPrintLabels)}
+                        onChange={(e) => {
                           tech.canPrintLabels = e.target.checked;
-                          const updated = {
-                            ...configDb,
-                            technicians: configDb.technicians.map(t => t.id === tech.id ? { ...t, canPrintLabels: tech.canPrintLabels } : t)
-                          };
-                          await saveConfig(updated);
-                          showTemporaryMessage('success', `Updated permissions for ${tech.name}`);
                         }}
                         className="rounded border-slate-700 bg-slate-900 text-violet-500 focus:ring-violet-500 w-4.5 h-4.5"
                       />
@@ -5273,16 +5288,9 @@ export default function App() {
                     <label className="flex items-center gap-3 cursor-pointer pt-1">
                       <input 
                         type="checkbox" 
-                        checked={tech.canShipOrders}
-                        onChange={async (e) => {
-                          if (!configDb) return;
+                        checked={Boolean(tech.canShipOrders)}
+                        onChange={(e) => {
                           tech.canShipOrders = e.target.checked;
-                          const updated = {
-                            ...configDb,
-                            technicians: configDb.technicians.map(t => t.id === tech.id ? { ...t, canShipOrders: tech.canShipOrders } : t)
-                          };
-                          await saveConfig(updated);
-                          showTemporaryMessage('success', `Updated permissions for ${tech.name}`);
                         }}
                         className="rounded border-slate-700 bg-slate-900 text-violet-500 focus:ring-violet-500 w-4.5 h-4.5"
                       />
