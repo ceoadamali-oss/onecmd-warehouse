@@ -1,4 +1,5 @@
 import { requireStaffAuth } from './_auth.js';
+import { getOpenAIKey } from './_openaiKey.js';
 
 export default async function handler(req, res) {
   // CORS Headers
@@ -26,7 +27,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing base64Image' });
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = getOpenAIKey();
 
   if (!apiKey) {
     return res.status(500).json({ error: 'OpenAI API key configuration error on server.' });
