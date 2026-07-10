@@ -107,12 +107,95 @@ export default async function handler(req, res) {
       
       const { data: existingItem, error: checkError } = await supabase
         .from(table)
-        .select('sku')
+        .select('sku, brand, name, size, image')
         .eq('sku', skuKey)
         .maybeSingle();
 
       if (checkError) throw checkError;
       const itemExists = !!existingItem;
+
+      if (itemExists) {
+        console.log(`⚡ [API Serverless] Item exists for SKU ${skuKey}. Checking if details need updating...`);
+        const needsUpdate = 
+          !existingItem.brand || 
+          existingItem.brand.toLowerCase() === 'generic' || 
+          existingItem.brand.toLowerCase() === 'unknown brand' ||
+          !existingItem.name || 
+          existingItem.name.includes('Received Catalog SKU') ||
+          existingItem.name.includes('Generic') ||
+          (!existingItem.image && newProduct && newProduct.productPhoto);
+
+        if (needsUpdate) {
+          console.log(`⚡ [API Serverless] Updating incomplete catalog item details for SKU: ${skuKey}...`);
+          let publicImageUrl = existingItem.image || '';
+
+          if (newProduct && newProduct.productPhoto) {
+            try {
+              const buffer = base64ToBuffer(newProduct.productPhoto);
+              const filePath = `${skuKey}.jpg`;
+              await supabase.storage.createBucket('product-images', { public: true }).catch(() => {});
+              const { error: uploadErr } = await supabase.storage
+                .from('product-images')
+                .upload(filePath, buffer, {
+                  contentType: 'image/jpeg',
+                  upsert: true
+                });
+
+              if (!uploadErr) {
+                const { data: urlData } = supabase.storage
+                  .from('product-images')
+                  .getPublicUrl(filePath);
+                publicImageUrl = urlData.publicUrl;
+              }
+            } catch (imgErr) {
+              console.error("❌ Image upload process failed:", imgErr);
+            }
+          }
+
+          let catalogName = existingItem.name;
+          let brandName = existingItem.brand;
+          let sizeValue = existingItem.size;
+          let typeValue = 'All-Season';
+          let winterApprovedVal = false;
+
+          if (newProduct) {
+            brandName = newProduct.brand || brandName;
+            sizeValue = newProduct.size || sizeValue;
+            typeValue = newProduct.season || typeValue;
+            winterApprovedVal = !!newProduct.winterApproved;
+
+            catalogName = `${brandName} ${newProduct.model || ''}`;
+            if (isWheel) {
+              if (newProduct.finish) catalogName += ` ${newProduct.finish}`;
+              catalogName += ` (${sizeValue}`;
+              if (newProduct.bolt_pattern) catalogName += ` PCD:${newProduct.bolt_pattern}`;
+              if (newProduct.offset) catalogName += ` ET:${newProduct.offset}`;
+              if (newProduct.center_bore) catalogName += ` CB:${newProduct.center_bore}`;
+              catalogName += ')';
+            } else {
+              if (newProduct.ply_rating && newProduct.ply_rating !== 'N/A') {
+                catalogName += ` (${newProduct.ply_rating})`;
+              }
+              if (winterApprovedVal) catalogName += ' 3PMSF';
+            }
+          }
+
+          const updatePayload = {
+            brand: brandName,
+            size: sizeValue,
+            name: catalogName,
+            image: publicImageUrl || existingItem.image
+          };
+          if (!isWheel && typeValue) updatePayload.type = typeValue;
+
+          const { error: updateErr } = await supabase.from(table).update(updatePayload).eq('sku', skuKey);
+          if (updateErr) {
+            console.error(`❌ Failed to update catalog item ${skuKey}:`, updateErr.message);
+          } else {
+            console.log(`✔ Successfully updated catalog item ${skuKey} with clean details.`);
+          }
+        }
+      }
 
       if (!itemExists) {
         console.log(`⚡ [API Serverless] Creating missing catalog item for SKU: ${skuKey}...`);
