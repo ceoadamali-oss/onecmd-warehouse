@@ -736,14 +736,6 @@ export default function App() {
 
   const verifyPremisesAccess = async (): Promise<boolean> => {
     if (GEOFENCE_DEV_BYPASS || loginMode === 'admin') return true;
-    if (
-      loginMode === 'technician' &&
-      technicianAllowsOffPremises(configDb, { pin: pinInput.trim() })
-    ) {
-      setIsOnPremises(true);
-      setGpsError(null);
-      return true;
-    }
     setPremisesChecking(true);
     try {
       const position = await requestGpsPosition();
@@ -846,19 +838,13 @@ export default function App() {
       return;
     }
 
-    if (!configDb && loginMode !== 'admin') {
-      setAuthError('System database loading. Please try again in a moment.');
-      return;
-    }
-
-    const onPremises = loginMode === 'admin' ? true : await verifyPremisesAccess();
-    if (!onPremises) return;
-
     const selectedStoreObj = locations.find(l => l.id === activeLocation);
     const storeName = selectedStoreObj ? selectedStoreObj.name : activeLocation;
     const credential = pinInput.trim();
 
     if (loginMode === 'admin') {
+      const onPremises = await verifyPremisesAccess();
+      if (!onPremises) return;
       try {
         const res = await fetch('/api/staff-auth', {
           method: 'POST',
@@ -921,6 +907,14 @@ export default function App() {
           return;
         }
 
+        if (data.allowOffPremises) {
+          setIsOnPremises(true);
+          setGpsError(null);
+        } else {
+          const onPremises = await verifyPremisesAccess();
+          if (!onPremises) return;
+        }
+
         setStaffToken(data.token);
         const workerUser: AppUser = {
           role: 'worker',
@@ -931,7 +925,6 @@ export default function App() {
         };
         setCurrentUser(workerUser);
         setLocationName(storeName);
-        if (data.allowOffPremises) setIsOnPremises(true);
         localStorage.setItem('onecmd_active_location', activeLocation);
         localStorage.setItem('onecmd_active_location_name', storeName);
         localStorage.setItem('onecmd_current_user', JSON.stringify(workerUser));
