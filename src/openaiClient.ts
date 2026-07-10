@@ -1,3 +1,4 @@
+import { authHeaders } from './staffAuth';
 const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY || '';
 
 export interface TireStickerData {
@@ -93,9 +94,7 @@ Do not return any markdown formatting or extra text. Just the JSON object.`;
   } else {
     response = await fetch('/api/parse-sticker', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: authHeaders(),
       body: JSON.stringify({ base64Image })
     });
   }
@@ -177,9 +176,7 @@ Do not return any markdown formatting or extra text. Just the JSON object.`;
   } else {
     response = await fetch('/api/parse-sidewall', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: authHeaders(),
       body: JSON.stringify({ base64Image })
     });
   }
@@ -258,9 +255,7 @@ Do not return any markdown formatting or extra text. Just the JSON object.`;
   } else {
     response = await fetch('/api/estimate-stack', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: authHeaders(),
       body: JSON.stringify({ base64Image })
     });
   }
@@ -286,9 +281,7 @@ Do not return any markdown formatting or extra text. Just the JSON object.`;
 export async function parseBulkStack(base64Image: string): Promise<{ items: TireStickerData[] }> {
   const response = await fetch('/api/parse-bulk-stack', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
+    headers: authHeaders(),
     body: JSON.stringify({ base64Image })
   });
 
