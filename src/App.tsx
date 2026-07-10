@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Package, 
   ArrowLeftRight, 
@@ -51,7 +51,25 @@ type AppUser = {
   location: string;
   technicianId?: string;
   isSuperAdmin?: boolean;
+  allowOffPremises?: boolean;
 };
+
+function technicianAllowsOffPremises(
+  config: { technicians: any[] } | null,
+  opts: { technicianId?: string; pin?: string; allowOffPremisesFlag?: boolean }
+): boolean {
+  if (opts.allowOffPremisesFlag) return true;
+  if (!config?.technicians?.length) return false;
+  if (opts.technicianId) {
+    const tech = config.technicians.find((t) => t.id === opts.technicianId);
+    return Boolean(tech?.allowOffPremises);
+  }
+  if (opts.pin) {
+    const tech = config.technicians.find((t) => String(t.pin) === opts.pin);
+    return Boolean(tech?.allowOffPremises);
+  }
+  return false;
+}
 
 /** Grace period after leaving fence before auto clock-out */
 const GEOFENCE_GRACE_MS = 15 * 60 * 1000;
@@ -254,6 +272,15 @@ export default function App() {
     currentUser?.isSuperAdmin ?? (currentUser?.role === 'manager' && !currentUser?.technicianId)
   );
 
+  const allowsOffPremises = useMemo(
+    () =>
+      technicianAllowsOffPremises(configDb, {
+        technicianId: currentUser?.technicianId,
+        allowOffPremisesFlag: currentUser?.allowOffPremises,
+      }),
+    [configDb, currentUser?.technicianId, currentUser?.allowOffPremises]
+  );
+
   // Load / Initialize system config from Supabase
   const loadConfig = async () => {
     try {
@@ -355,10 +382,10 @@ export default function App() {
     }
   }, [configDb, currentUser]);
 
-  // Premises geofence — staff only; super admin unrestricted
+  // Premises geofence — staff only; super admin & off-premises permission unrestricted
   useEffect(() => {
     if (!currentUser || !activeLocation) return;
-    if (GEOFENCE_DEV_BYPASS || isSuperAdminUser) {
+    if (GEOFENCE_DEV_BYPASS || isSuperAdminUser || allowsOffPremises) {
       setIsOnPremises(true);
       setGpsError(null);
       return;
@@ -369,19 +396,19 @@ export default function App() {
     return () => {
       if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
     };
-  }, [currentUser, activeLocation, isSuperAdminUser]);
+  }, [currentUser, activeLocation, isSuperAdminUser, allowsOffPremises]);
 
   // Staff timecard geofence (active store only)
   useEffect(() => {
-    if (!currentUser?.technicianId || isSuperAdminUser) return;
+    if (!currentUser?.technicianId || isSuperAdminUser || allowsOffPremises) return;
     if (!isClockedIn) return;
     const interval = setInterval(() => checkGeofence(), 120000);
     return () => clearInterval(interval);
-  }, [currentUser, activeLocation, isClockedIn, isSuperAdminUser]);
+  }, [currentUser, activeLocation, isClockedIn, isSuperAdminUser, allowsOffPremises]);
 
   // Track when staff leave the geofence while clocked in
   useEffect(() => {
-    if (!isClockedIn || distanceToShop === null) return;
+    if (allowsOffPremises || !isClockedIn || distanceToShop === null) return;
 
     const isBreaching = distanceToShop > GEOFENCE_RADIUS_KM;
     if (isBreaching) {
@@ -389,11 +416,11 @@ export default function App() {
     } else {
       setGeofenceExitAt(null);
     }
-  }, [distanceToShop, isClockedIn]);
+  }, [distanceToShop, isClockedIn, allowsOffPremises]);
 
   // Auto clock-out after 15 min grace — records clock-out at leave time
   useEffect(() => {
-    if (!isClockedIn || !geofenceExitAt) return;
+    if (allowsOffPremises || !isClockedIn || !geofenceExitAt) return;
 
     const checkGrace = () => {
       if (distanceToShop !== null && distanceToShop > GEOFENCE_RADIUS_KM) {
@@ -406,7 +433,7 @@ export default function App() {
     checkGrace();
     const interval = setInterval(checkGrace, 30000);
     return () => clearInterval(interval);
-  }, [isClockedIn, geofenceExitAt, distanceToShop]);
+  }, [isClockedIn, geofenceExitAt, distanceToShop, allowsOffPremises]);
 
   // Live timer tick for super admin workforce panel
   useEffect(() => {
@@ -629,6 +656,14 @@ export default function App() {
 
   const verifyPremisesAccess = async (): Promise<boolean> => {
     if (GEOFENCE_DEV_BYPASS || loginMode === 'admin') return true;
+    if (
+      loginMode === 'technician' &&
+      technicianAllowsOffPremises(configDb, { pin: pinInput.trim() })
+    ) {
+      setIsOnPremises(true);
+      setGpsError(null);
+      return true;
+    }
     setPremisesChecking(true);
     try {
       const position = await requestGpsPosition();
@@ -653,7 +688,7 @@ export default function App() {
   };
 
   const checkGeofence = () => {
-    if (GEOFENCE_DEV_BYPASS || isSuperAdminUser) {
+    if (GEOFENCE_DEV_BYPASS || isSuperAdminUser || allowsOffPremises) {
       setIsOnPremises(true);
       setGpsError(null);
       return;
@@ -811,9 +846,11 @@ export default function App() {
           name: data.name,
           location: activeLocation,
           technicianId: data.technicianId,
+          allowOffPremises: Boolean(data.allowOffPremises),
         };
         setCurrentUser(workerUser);
         setLocationName(storeName);
+        if (data.allowOffPremises) setIsOnPremises(true);
         localStorage.setItem('onecmd_active_location', activeLocation);
         localStorage.setItem('onecmd_active_location_name', storeName);
         localStorage.setItem('onecmd_current_user', JSON.stringify(workerUser));
@@ -1850,8 +1887,8 @@ export default function App() {
     );
   }
 
-  // RENDER: Main Application — locked off-premises (staff only)
-  if (!GEOFENCE_DEV_BYPASS && !isSuperAdminUser && !isOnPremises) {
+  // RENDER: Main Application — locked off-premises (staff only, unless off-premises permission)
+  if (!GEOFENCE_DEV_BYPASS && !isSuperAdminUser && !allowsOffPremises && !isOnPremises) {
     return (
       <div className="flex-1 flex flex-col min-h-[100dvh] premises-lock-screen">
         <PremisesLockOverlay
@@ -5164,6 +5201,32 @@ export default function App() {
 
                   <div className="space-y-3 pt-2">
                     <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(tech.allowOffPremises)}
+                        onChange={async (e) => {
+                          if (!configDb) return;
+                          tech.allowOffPremises = e.target.checked;
+                          const updated = {
+                            ...configDb,
+                            technicians: configDb.technicians.map((t) =>
+                              t.id === tech.id ? { ...t, allowOffPremises: tech.allowOffPremises } : t
+                            ),
+                          };
+                          await saveConfig(updated);
+                          showTemporaryMessage('success', `Updated permissions for ${tech.name}`);
+                        }}
+                        className="rounded border-slate-700 bg-slate-900 text-violet-500 focus:ring-violet-500 w-4.5 h-4.5"
+                      />
+                      <div>
+                        <span className="text-slate-200 font-semibold">Can Use App Off-Premises</span>
+                        <span className="text-[10px] text-gray-500 block">
+                          Allows login and app use away from assigned store location.
+                        </span>
+                      </div>
+                    </label>
+
+                    <label className="flex items-center gap-3 cursor-pointer pt-1">
                       <input 
                         type="checkbox" 
                         checked={tech.canEditInventory}

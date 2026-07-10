@@ -70,6 +70,7 @@ export default async function handler(req, res) {
       role: 'TECHNICIAN',
       name: matched.name || 'Technician',
       technicianId: matched.id || matched.technicianId,
+      allowOffPremises: Boolean(matched.allowOffPremises),
       locationId,
       locationName: locName,
     });

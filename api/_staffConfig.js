@@ -70,6 +70,7 @@ export async function loadAllTechnicianPins() {
       id: t.id,
       name: t.name,
       technicianId: t.id,
+      allowOffPremises: Boolean(t.allowOffPremises),
     }));
 
   const byPin = new Map();

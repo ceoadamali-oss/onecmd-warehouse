@@ -74,6 +74,7 @@ export default async function handler(req, res) {
       canEditInventory: false,
       canPrintLabels: false,
       canShipOrders: true,
+      allowOffPremises: false,
     };
 
     const updated = {
