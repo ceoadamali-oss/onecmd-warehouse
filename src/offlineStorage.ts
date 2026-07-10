@@ -75,10 +75,10 @@ export const offlineStorage = {
 
     for (const tx of queue) {
       try {
-        const response = await fetch('/api/sync-transaction', {
+        const response = await fetch('/api/transaction', {
           method: 'POST',
           headers: authHeaders(),
-          body: JSON.stringify(tx)
+          body: JSON.stringify({ action: 'sync', tx })
         });
 
         if (!response.ok) {

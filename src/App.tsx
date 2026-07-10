@@ -1097,10 +1097,10 @@ export default function App() {
   };
 
   const syncTransactionWithServer = async (tx: any, newProduct?: any) => {
-    const response = await fetch('/api/sync-transaction', {
+    const response = await fetch('/api/transaction', {
       method: 'POST',
       headers: authHeaders(),
-      body: JSON.stringify({ tx, newProduct })
+      body: JSON.stringify({ action: 'sync', tx, newProduct })
     });
 
     if (!response.ok) {
@@ -1348,10 +1348,11 @@ export default function App() {
     }
 
     try {
-      const response = await fetch('/api/edit-transaction', {
+      const response = await fetch('/api/transaction', {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({
+          action: 'edit',
           transactionId: editingTransaction.id,
           newQuantity: newQty,
           notes: `Corrected by ${currentUser?.name || 'Manager'} on override. Original: ${editingTransaction.quantity}`,
@@ -1387,10 +1388,11 @@ export default function App() {
     }
 
     try {
-      const response = await fetch('/api/undo-transaction', {
+      const response = await fetch('/api/transaction', {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ 
+          action: 'undo',
           transactionId: editingTransaction.id, 
           managerPin: managerPinInput
         })
@@ -1495,10 +1497,10 @@ export default function App() {
         return;
       }
 
-      const response = await fetch('/api/undo-transaction', {
+      const response = await fetch('/api/transaction', {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ transactionId: tx.id })
+        body: JSON.stringify({ action: 'undo', transactionId: tx.id })
       });
 
       if (!response.ok) {
