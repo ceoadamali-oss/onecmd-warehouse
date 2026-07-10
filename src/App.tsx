@@ -54,6 +54,12 @@ type AppUser = {
   allowOffPremises?: boolean;
 };
 
+function normalizeStaffPin(pin: string | number | null | undefined): string {
+  const digits = String(pin ?? '').replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.padStart(4, '0').slice(-4);
+}
+
 function technicianAllowsOffPremises(
   config: { technicians: any[] } | null,
   opts: { technicianId?: string; pin?: string; allowOffPremisesFlag?: boolean }
@@ -65,7 +71,8 @@ function technicianAllowsOffPremises(
     return Boolean(tech?.allowOffPremises);
   }
   if (opts.pin) {
-    const tech = config.technicians.find((t) => String(t.pin) === opts.pin);
+    const normalizedPin = normalizeStaffPin(opts.pin);
+    const tech = config.technicians.find((t) => normalizeStaffPin(t.pin) === normalizedPin);
     return Boolean(tech?.allowOffPremises);
   }
   return false;
@@ -251,9 +258,8 @@ export default function App() {
   const [newTechPreferredDay, setNewTechPreferredDay] = useState('None');
   const [creatingTech, setCreatingTech] = useState(false);
   const [inviteSentMsg, setInviteSentMsg] = useState('');
-  const [profileUpdateState, setProfileUpdateState] = useState<Record<string, 'idle' | 'loading' | 'updated' | 'error'>>({});
   const [configRevision, setConfigRevision] = useState(0);
-  const [profileSaveState, setProfileSaveState] = useState<Record<string, 'idle' | 'saving' | 'saved'>>({});
+  const [profileSaveState, setProfileSaveState] = useState<Record<string, 'idle' | 'saving' | 'saved' | 'error'>>({});
 
   // Manager Weekly Schedule states
   const [rosterDaysQuotas, setRosterDaysQuotas] = useState<Record<string, number>>({});
@@ -269,7 +275,6 @@ export default function App() {
 
   const timerRef = useRef<any>(null);
   const heartbeatIntervalRef = useRef<any>(null);
-  const profileResetTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   /** Super admin = manager login (password), not PIN staff */
   const isSuperAdminUser = Boolean(
@@ -307,21 +312,63 @@ export default function App() {
     }
   };
 
-  const saveConfig = async (updatedConfig: any): Promise<boolean> => {
+  const saveConfig = async (
+    updater:
+      | { technicians: any[]; timecards: any[]; schedules: any[] }
+      | ((fresh: { technicians: any[]; timecards: any[]; schedules: any[] }) => {
+          technicians: any[];
+          timecards: any[];
+          schedules: any[];
+        })
+  ): Promise<boolean> => {
     try {
-      const res = await fetch('/api/update-staff-config', {
+      const { data, error: loadError } = await supabase
+        .from('tires_catalog')
+        .select('location_counts')
+        .eq('sku', 'CONFIG-EMPLOYEES')
+        .maybeSingle();
+      if (loadError) throw loadError;
+
+      const fresh = data?.location_counts || { technicians: [], timecards: [], schedules: [] };
+      const updatedConfig = typeof updater === 'function' ? updater(fresh) : updater;
+
+      const res = await fetch('/api/register-staff', {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ config: updatedConfig }),
+        body: JSON.stringify({ action: 'saveConfig', config: updatedConfig }),
       });
-      const data = await res.json().catch(() => ({}));
+      const result = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data.error || `Save failed (${res.status})`);
+        throw new Error(result.error || `Save failed (${res.status})`);
       }
       setConfigDb(updatedConfig);
       return true;
     } catch (e: any) {
+      await loadConfig();
       showTemporaryMessage('error', `Failed to sync database: ${e.message}`);
+      return false;
+    }
+  };
+
+  const saveStaffTechnicianUpdate = async (
+    technicianId: string,
+    patch: Record<string, unknown>
+  ): Promise<boolean> => {
+    try {
+      const response = await fetch('/api/register-staff', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ action: 'updateStaff', technicianId, ...patch }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Failed to update staff profile.');
+      }
+      await loadConfig();
+      setConfigRevision((r) => r + 1);
+      return true;
+    } catch (e: any) {
+      showTemporaryMessage('error', e.message || 'Failed to update staff profile.');
       return false;
     }
   };
@@ -333,10 +380,14 @@ export default function App() {
     specialty: draft.specialty ?? existing.specialty,
     locationId: draft.locationId ?? existing.locationId,
     preferredDay: draft.preferredDay || existing.preferredDay || 'None',
-    allowOffPremises: Boolean(draft.allowOffPremises),
-    canEditInventory: Boolean(draft.canEditInventory),
-    canPrintLabels: Boolean(draft.canPrintLabels),
-    canShipOrders: draft.canShipOrders !== undefined ? Boolean(draft.canShipOrders) : Boolean(existing.canShipOrders),
+    allowOffPremises:
+      draft.allowOffPremises !== undefined ? Boolean(draft.allowOffPremises) : Boolean(existing.allowOffPremises),
+    canEditInventory:
+      draft.canEditInventory !== undefined ? Boolean(draft.canEditInventory) : Boolean(existing.canEditInventory),
+    canPrintLabels:
+      draft.canPrintLabels !== undefined ? Boolean(draft.canPrintLabels) : Boolean(existing.canPrintLabels),
+    canShipOrders:
+      draft.canShipOrders !== undefined ? Boolean(draft.canShipOrders) : existing.canShipOrders !== false,
   });
 
   // Monitor network status & offline queue
@@ -404,6 +455,12 @@ export default function App() {
       setActiveShift(null);
     }
   }, [configDb, currentUser]);
+
+  useEffect(() => {
+    if (activeTab === 'permissions' && isSuperAdminUser) {
+      loadConfig().then(() => setConfigRevision((r) => r + 1));
+    }
+  }, [activeTab, isSuperAdminUser]);
 
   // Premises geofence — staff only; super admin & off-premises permission unrestricted
   useEffect(() => {
@@ -692,18 +749,21 @@ export default function App() {
       const position = await requestGpsPosition();
       const { latitude, longitude } = position.coords;
       setGpsCoords({ lat: latitude, lng: longitude });
-      const premises = getPremisesStatus(latitude, longitude);
+      const premises = getPremisesStatus(latitude, longitude, activeLocation);
       setIsOnPremises(premises.isOnPremises);
       setGpsError(null);
       if (!premises.isOnPremises) {
-        setAuthError('Unable to sign in. Location verification is required.');
+        const storeLabel = premises.nearestStore?.name || 'the selected store';
+        setAuthError(
+          `Unable to sign in. You must be at ${storeLabel} (within ${Math.round(GEOFENCE_RADIUS_KM * 1000)}m) or have off-premises access enabled.`
+        );
         return false;
       }
       return true;
     } catch (err: any) {
       setGpsError(null);
       setIsOnPremises(false);
-      setAuthError('Unable to verify location. Enable GPS and try again.');
+      setAuthError('Unable to verify location. Enable GPS/location permissions and try again.');
       return false;
     } finally {
       setPremisesChecking(false);
@@ -728,7 +788,7 @@ export default function App() {
         setGpsCoords({ lat: latitude, lng: longitude });
         setGpsError(null);
 
-        const premises = getPremisesStatus(latitude, longitude);
+        const premises = getPremisesStatus(latitude, longitude, activeLocation);
         setIsOnPremises(premises.isOnPremises);
 
         const currentLoc = locations.find((l) => l.id === activeLocation);
@@ -753,24 +813,22 @@ export default function App() {
     if (!isClockedIn || !activeShift || !configDb) return;
     try {
       const clockOutTime = clockOutAtIso || new Date().toISOString();
-      const updatedTimecards = configDb.timecards.map((tc: any) => {
-        if (tc.id === activeShift.id) {
-          return {
-            ...tc,
-            status: 'completed',
-            clockOut: clockOutTime,
-            notes: 'Auto clock-out: location verification failed'
-          };
-        }
-        return tc;
-      });
+      const shiftId = activeShift.id;
 
-      const updated = {
-        ...configDb,
-        timecards: updatedTimecards
-      };
-
-      await saveConfig(updated);
+      await saveConfig((fresh) => ({
+        ...fresh,
+        timecards: fresh.timecards.map((tc: any) => {
+          if (tc.id === shiftId) {
+            return {
+              ...tc,
+              status: 'completed',
+              clockOut: clockOutTime,
+              notes: 'Auto clock-out: location verification failed',
+            };
+          }
+          return tc;
+        }),
+      }));
       setIsClockedIn(false);
       setActiveShift(null);
       setGeofenceExitAt(null);
@@ -4376,11 +4434,10 @@ export default function App() {
                     status: 'active',
                     payoutStatus: 'unpaid'
                   };
-                  const updated = {
-                    ...configDb,
-                    timecards: [...(configDb?.timecards || []), newShift]
-                  };
-                  await saveConfig(updated);
+                  await saveConfig((fresh) => ({
+                    ...fresh,
+                    timecards: [...(fresh.timecards || []), newShift],
+                  }));
                   setIsClockedIn(true);
                   setActiveShift(newShift);
                   setGeofenceExitAt(null);
@@ -4398,13 +4455,16 @@ export default function App() {
                 onClick={async () => {
                   if (!configDb) return;
                   const clockOutTime = new Date().toISOString();
-                  const updatedTimecards = configDb.timecards.map((tc: any) => {
-                    if (tc.id === activeShift.id) {
-                      return { ...tc, status: 'completed', clockOut: clockOutTime };
-                    }
-                    return tc;
-                  });
-                  await saveConfig({ ...configDb, timecards: updatedTimecards });
+                  const shiftId = activeShift.id;
+                  await saveConfig((fresh) => ({
+                    ...fresh,
+                    timecards: fresh.timecards.map((tc: any) => {
+                      if (tc.id === shiftId) {
+                        return { ...tc, status: 'completed', clockOut: clockOutTime };
+                      }
+                      return tc;
+                    }),
+                  }));
                   setIsClockedIn(false);
                   setActiveShift(null);
                   setGeofenceExitAt(null);
@@ -4634,13 +4694,14 @@ export default function App() {
                               value={tech.preferredDay || 'None'}
                               onChange={async (e) => {
                                 if (!configDb) return;
-                                tech.preferredDay = e.target.value;
-                                const updated = {
-                                  ...configDb,
-                                  technicians: configDb.technicians.map(t => t.id === tech.id ? { ...t, preferredDay: e.target.value } : t)
-                                };
-                                await saveConfig(updated);
-                                showTemporaryMessage('success', `Updated preferred day for ${tech.name} to ${e.target.value}`);
+                                const preferredDay = e.target.value;
+                                tech.preferredDay = preferredDay;
+                                const ok = await saveStaffTechnicianUpdate(tech.id, { preferredDay });
+                                if (ok) {
+                                  showTemporaryMessage('success', `Updated preferred day for ${tech.name} to ${preferredDay}`);
+                                } else {
+                                  setConfigRevision((r) => r + 1);
+                                }
                               }}
                               className="bg-slate-900 border border-slate-700 text-white rounded-lg py-1 px-2 text-xs focus:outline-none focus:ring-1 focus:ring-violet-500"
                             >
@@ -4771,11 +4832,11 @@ export default function App() {
                   <button
                     type="button"
                     onClick={async () => {
-                      const updated = {
-                        ...configDb,
-                        schedules: generatedRosterPreview
-                      };
-                      await saveConfig(updated);
+                      if (!generatedRosterPreview) return;
+                      await saveConfig((fresh) => ({
+                        ...fresh,
+                        schedules: generatedRosterPreview,
+                      }));
                       setGeneratedRosterPreview(null);
                       showTemporaryMessage('success', 'Roster approved and published! Technicians can now view their schedules.');
                       setActiveTab('dashboard');
@@ -4868,19 +4929,11 @@ export default function App() {
                       <button
                         type="button"
                         onClick={async () => {
-                          if (!configDb) return;
-                          const updatedTechs = configDb.technicians.map(t => {
-                            if (t.id === tech.id) {
-                              return { ...t, hourlyRate: tech.hourlyRate };
-                            }
-                            return t;
-                          });
-                          const updated = {
-                            ...configDb,
-                            technicians: updatedTechs
-                          };
-                          await saveConfig(updated);
-                          showTemporaryMessage('success', `Saved hourly rate for ${tech.name}.`);
+                          if (!configDb || !tech.hourlyRate) return;
+                          const ok = await saveStaffTechnicianUpdate(tech.id, { hourlyRate: tech.hourlyRate });
+                          if (ok) {
+                            showTemporaryMessage('success', `Saved hourly rate for ${tech.name}.`);
+                          }
                         }}
                         className="btn-secondary py-1.5 px-3 text-xs bg-white/5 border border-glass text-slate-100"
                       >
@@ -4894,17 +4947,16 @@ export default function App() {
                             showTemporaryMessage('error', 'Technician has no unpaid shifts.');
                             return;
                           }
-                          const updatedTimecards = configDb.timecards.map((tc: any) => {
-                            if (tc.technicianId === tech.id && tc.payoutStatus === 'unpaid') {
-                              return { ...tc, payoutStatus: 'paid' };
-                            }
-                            return tc;
-                          });
-                          const updated = {
-                            ...configDb,
-                            timecards: updatedTimecards
-                          };
-                          await saveConfig(updated);
+                          const techId = tech.id;
+                          await saveConfig((fresh) => ({
+                            ...fresh,
+                            timecards: fresh.timecards.map((tc: any) => {
+                              if (tc.technicianId === techId && tc.payoutStatus === 'unpaid') {
+                                return { ...tc, payoutStatus: 'paid' };
+                              }
+                              return tc;
+                            }),
+                          }));
                           showTemporaryMessage('success', `Executed payout of $${earnings.toFixed(2)} to ${tech.name}. Balance reset to zero!`);
                         }}
                         disabled={earnings <= 0}
@@ -5204,35 +5256,51 @@ export default function App() {
                       onClick={async () => {
                         if (!configDb) return;
                         setProfileSaveState((s) => ({ ...s, [tech.id]: 'saving' }));
-                        const updated = {
-                          ...configDb,
-                          technicians: configDb.technicians.map((t) =>
-                            t.id === tech.id ? mergeTechnicianProfile(t, tech) : t
-                          ),
-                        };
-                        const ok = await saveConfig(updated);
+                        const saved = configDb.technicians.find((t) => t.id === tech.id) || tech;
+                        const merged = mergeTechnicianProfile(saved, tech);
+                        const ok = await saveStaffTechnicianUpdate(tech.id, {
+                          hourlyRate: merged.hourlyRate,
+                          pin: merged.pin,
+                          specialty: merged.specialty,
+                          locationId: merged.locationId,
+                          preferredDay: merged.preferredDay,
+                          allowOffPremises: merged.allowOffPremises,
+                          canEditInventory: merged.canEditInventory,
+                          canPrintLabels: merged.canPrintLabels,
+                          canShipOrders: merged.canShipOrders,
+                        });
                         if (ok) {
-                          await loadConfig();
-                          setConfigRevision((r) => r + 1);
                           setProfileSaveState((s) => ({ ...s, [tech.id]: 'saved' }));
+                          showTemporaryMessage('success', `Successfully updated profile for ${tech.name}.`);
                           window.setTimeout(() => {
                             setProfileSaveState((s) => ({ ...s, [tech.id]: 'idle' }));
-                          }, 2000);
+                          }, 3000);
                         } else {
-                          setProfileSaveState((s) => ({ ...s, [tech.id]: 'idle' }));
+                          setProfileSaveState((s) => ({ ...s, [tech.id]: 'error' }));
                         }
                       }}
-                      className="btn-primary py-1.5 px-3 text-xs bg-violet-600 hover:bg-violet-500 text-white rounded-lg cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1.5"
+                      className={`btn-primary py-1.5 px-3 text-xs rounded-lg cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1.5 ${
+                        profileSaveState[tech.id] === 'saved'
+                          ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                          : profileSaveState[tech.id] === 'error'
+                            ? 'bg-red-600 hover:bg-red-500 text-white'
+                            : 'bg-violet-600 hover:bg-violet-500 text-white'
+                      }`}
                     >
                       {profileSaveState[tech.id] === 'saving' ? (
                         <>
                           <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                          Saving...
+                          Updating...
                         </>
                       ) : profileSaveState[tech.id] === 'saved' ? (
-                        'Updated'
+                        <>
+                          <Check className="w-3.5 h-3.5" />
+                          Updated
+                        </>
+                      ) : profileSaveState[tech.id] === 'error' ? (
+                        'Save Failed — Retry'
                       ) : (
-                        'Update Profile Info'
+                        'Update Profile'
                       )}
                     </button>
                   </div>
@@ -5242,8 +5310,16 @@ export default function App() {
                       <input
                         type="checkbox"
                         checked={Boolean(tech.allowOffPremises)}
-                        onChange={(e) => {
-                          tech.allowOffPremises = e.target.checked;
+                        onChange={async (e) => {
+                          const checked = e.target.checked;
+                          tech.allowOffPremises = checked;
+                          const ok = await saveStaffTechnicianUpdate(tech.id, { allowOffPremises: checked });
+                          if (ok) {
+                            showTemporaryMessage('success', `Updated off-premises access for ${tech.name}`);
+                          } else {
+                            tech.allowOffPremises = !checked;
+                            setConfigRevision((r) => r + 1);
+                          }
                         }}
                         className="rounded border-slate-700 bg-slate-900 text-violet-500 focus:ring-violet-500 w-4.5 h-4.5"
                       />
@@ -5259,8 +5335,14 @@ export default function App() {
                       <input 
                         type="checkbox" 
                         checked={Boolean(tech.canEditInventory)}
-                        onChange={(e) => {
-                          tech.canEditInventory = e.target.checked;
+                        onChange={async (e) => {
+                          const checked = e.target.checked;
+                          tech.canEditInventory = checked;
+                          const ok = await saveStaffTechnicianUpdate(tech.id, { canEditInventory: checked });
+                          if (!ok) {
+                            tech.canEditInventory = !checked;
+                            setConfigRevision((r) => r + 1);
+                          }
                         }}
                         className="rounded border-slate-700 bg-slate-900 text-violet-500 focus:ring-violet-500 w-4.5 h-4.5"
                       />
@@ -5274,8 +5356,14 @@ export default function App() {
                       <input 
                         type="checkbox" 
                         checked={Boolean(tech.canPrintLabels)}
-                        onChange={(e) => {
-                          tech.canPrintLabels = e.target.checked;
+                        onChange={async (e) => {
+                          const checked = e.target.checked;
+                          tech.canPrintLabels = checked;
+                          const ok = await saveStaffTechnicianUpdate(tech.id, { canPrintLabels: checked });
+                          if (!ok) {
+                            tech.canPrintLabels = !checked;
+                            setConfigRevision((r) => r + 1);
+                          }
                         }}
                         className="rounded border-slate-700 bg-slate-900 text-violet-500 focus:ring-violet-500 w-4.5 h-4.5"
                       />
@@ -5289,8 +5377,14 @@ export default function App() {
                       <input 
                         type="checkbox" 
                         checked={Boolean(tech.canShipOrders)}
-                        onChange={(e) => {
-                          tech.canShipOrders = e.target.checked;
+                        onChange={async (e) => {
+                          const checked = e.target.checked;
+                          tech.canShipOrders = checked;
+                          const ok = await saveStaffTechnicianUpdate(tech.id, { canShipOrders: checked });
+                          if (!ok) {
+                            tech.canShipOrders = !checked;
+                            setConfigRevision((r) => r + 1);
+                          }
                         }}
                         className="rounded border-slate-700 bg-slate-900 text-violet-500 focus:ring-violet-500 w-4.5 h-4.5"
                       />

@@ -1,4 +1,5 @@
-export const GEOFENCE_RADIUS_KM = 0.1;
+/** ~300m — mobile GPS indoors often drifts beyond 100m of storefront coords */
+export const GEOFENCE_RADIUS_KM = 0.3;
 
 export const STORE_LOCATIONS = [
   { id: 'moncton', name: 'Tire King Moncton', lat: 46.1389, lng: -64.8488 },
@@ -24,7 +25,19 @@ export function distanceKm(lat1: number, lon1: number, lat2: number, lon2: numbe
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export function getPremisesStatus(lat: number, lng: number) {
+export function getPremisesStatus(lat: number, lng: number, preferredStoreId?: string | null) {
+  if (preferredStoreId) {
+    const selected = STORE_LOCATIONS.find((s) => s.id === preferredStoreId);
+    if (selected) {
+      const selectedDist = distanceKm(lat, lng, selected.lat, selected.lng);
+      return {
+        isOnPremises: selectedDist <= GEOFENCE_RADIUS_KM,
+        nearestStore: selected,
+        distanceKm: selectedDist,
+      };
+    }
+  }
+
   let nearest: (typeof STORE_LOCATIONS)[number] = STORE_LOCATIONS[0];
   let nearestDist = distanceKm(lat, lng, nearest.lat, nearest.lng);
 

@@ -6,7 +6,7 @@ const STORES = [
   { id: 'otown', lat: 45.8312, lng: -66.4923 },
 ];
 
-const RADIUS_KM = 0.1;
+const RADIUS_KM = 0.3;
 
 function distanceKm(lat1, lon1, lat2, lon2) {
   const R = 6371;

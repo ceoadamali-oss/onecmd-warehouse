@@ -53,6 +53,18 @@ export async function saveStaffConfig(config) {
   if (error) throw new Error(`Failed to save staff config: ${error.message}`);
 }
 
+/** Merge a patch into one technician record and persist (service role). */
+export async function patchStaffTechnician(technicianId, patch) {
+  const config = await loadStaffConfig();
+  const technicians = [...(config.technicians || [])];
+  const index = technicians.findIndex((t) => t?.id === technicianId);
+  if (index === -1) throw new Error('Technician not found.');
+
+  technicians[index] = { ...technicians[index], ...patch };
+  await saveStaffConfig({ ...config, technicians });
+  return technicians[index];
+}
+
 export function loadEnvTechnicianPins() {
   const raw = process.env.TECHNICIAN_PINS_JSON;
   if (!raw) return [];
