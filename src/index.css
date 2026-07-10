@@ -246,6 +246,50 @@ select option {
   color: var(--text-primary);
 }
 
+/* Dark-theme inputs for Access Governance / staff panels */
+.dark-input,
+input[type='email'],
+input[type='number'] {
+  width: 100%;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 0.875rem;
+  font-family: var(--font-sans);
+  color: #f8fafc;
+  outline: none;
+  min-height: var(--tap-min);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.dark-input:focus,
+input[type='email']:focus,
+input[type='number']:focus {
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.2);
+}
+
+.dark-input::placeholder,
+input[type='email']::placeholder,
+input[type='number']::placeholder {
+  color: #64748b;
+}
+
+.glass-panel .dark-input,
+.glass-panel input[type='email'],
+.glass-panel input[type='number'],
+.glass-panel select.dark-input {
+  background: #0f172a;
+  color: #f8fafc;
+  border-color: #334155;
+}
+
+.glass-panel select.dark-input option {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
 /* Receive intake — roomy fields (~15 words visible) */
 .intake-field {
   width: 100%;

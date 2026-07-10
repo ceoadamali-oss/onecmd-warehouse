@@ -4912,7 +4912,7 @@ export default function App() {
                     placeholder="Enter full name..."
                     value={newTechName}
                     onChange={e => setNewTechName(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
+                    className="w-full dark-input rounded-lg py-2 px-3"
                   />
                 </div>
                 <div className="space-y-1">
@@ -4922,7 +4922,7 @@ export default function App() {
                     placeholder="employee@domain.com"
                     value={newTechEmail}
                     onChange={e => setNewTechEmail(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
+                    className="w-full dark-input rounded-lg py-2 px-3"
                   />
                 </div>
               </div>
@@ -4935,7 +4935,7 @@ export default function App() {
                     placeholder="e.g. Alignment specialist"
                     value={newTechSpecialty}
                     onChange={e => setNewTechSpecialty(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
+                    className="w-full dark-input rounded-lg py-2 px-3"
                   />
                 </div>
                 <div className="space-y-1">
@@ -4943,7 +4943,7 @@ export default function App() {
                   <select
                     value={newTechLocation}
                     onChange={e => setNewTechLocation(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
+                    className="w-full dark-input rounded-lg py-2 px-3"
                   >
                     {locations.map(loc => (
                       <option key={loc.id} value={loc.id}>{loc.name}</option>
@@ -4961,7 +4961,7 @@ export default function App() {
                     placeholder="20.00"
                     value={newTechHourlyRate}
                     onChange={e => setNewTechHourlyRate(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
+                    className="w-full dark-input rounded-lg py-2 px-3"
                   />
                 </div>
                 <div className="space-y-1">
@@ -4969,7 +4969,7 @@ export default function App() {
                   <select
                     value={newTechPreferredDay}
                     onChange={e => setNewTechPreferredDay(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-2 px-3"
+                    className="w-full dark-input rounded-lg py-2 px-3"
                   >
                     <option value="None">None (Random Assignments)</option>
                     <option value="Monday">Monday</option>
@@ -4992,56 +4992,32 @@ export default function App() {
                   setCreatingTech(true);
                   setInviteSentMsg('');
                   try {
-                    const generatedPin = Math.floor(1000 + Math.random() * 9000).toString();
-                    const newTechObj = {
-                      id: 'tech-' + Math.random().toString(36).substring(2),
-                      name: newTechName,
-                      email: newTechEmail,
-                      pin: generatedPin,
-                      specialty: newTechSpecialty || 'General Technician',
-                      locationId: newTechLocation,
-                      hourlyRate: parseFloat(newTechHourlyRate) || 20.00,
-                      preferredDay: newTechPreferredDay || 'None',
-                      canEditInventory: false,
-                      canPrintLabels: false,
-                      canShipOrders: true
-                    };
-
-                    const updatedTechs = [...(configDb?.technicians || []), newTechObj];
-                    const updated = {
-                      ...configDb,
-                      technicians: updatedTechs
-                    };
-
-                    await saveConfig(updated);
-
-                    const emailBody = `
-                      <h2>Welcome to Atlantic Tire King, ${newTechName}!</h2>
-                      <p>Your employee account has been created on the warehouse dashboard.</p>
-                      <p>To access your account, select your location and enter your 4-digit PIN:</p>
-                      <h1 style="color: #6d28d9; letter-spacing: 5px;">${generatedPin}</h1>
-                      <p>Please keep this PIN secure. Use it to clock in and out from this app.</p>
-                    `;
-
-                    const mailResponse = await fetch('/api/send-email', {
+                    const regResponse = await fetch('/api/register-staff', {
                       method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json'
-                      },
+                      headers: authHeaders(),
                       body: JSON.stringify({
+                        name: newTechName,
                         email: newTechEmail,
-                        subject: 'Your Atlantic Tire King Warehouse Access PIN',
-                        html: emailBody
-                      })
+                        specialty: newTechSpecialty || 'General Technician',
+                        locationId: newTechLocation,
+                        hourlyRate: parseFloat(newTechHourlyRate) || 20.00,
+                        preferredDay: newTechPreferredDay || 'None',
+                      }),
                     });
 
-                    const mailResult = await mailResponse.json();
-                    if (mailResult.success) {
-                      setInviteSentMsg(`✓ Account created! PIN code (${generatedPin}) emailed to ${newTechEmail}`);
-                      showTemporaryMessage('success', 'Technician registered & invitation email dispatched!');
-                    } else {
-                      throw new Error(mailResult.error || 'Failed to send onboarding email');
+                    const regResult = await regResponse.json();
+                    if (!regResponse.ok || !regResult.success) {
+                      throw new Error(regResult.error || 'Registration failed.');
                     }
+
+                    await loadConfig();
+                    const generatedPin = regResult.pin;
+                    const emailNote = regResult.emailSimulated
+                      ? `(email simulated — RESEND_API_KEY not set on server)`
+                      : `emailed to ${newTechEmail}`;
+
+                    setInviteSentMsg(`✓ Account created! PIN code (${generatedPin}) ${emailNote}`);
+                    showTemporaryMessage('success', 'Technician registered & onboarding PIN ready!');
 
                     // Reset form
                     setNewTechName('');
@@ -5098,7 +5074,7 @@ export default function App() {
                             tech.hourlyRate = val;
                           }
                         }}
-                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-1.5 px-2.5"
+                        className="w-full dark-input rounded-lg py-1.5 px-2.5"
                       />
                     </div>
                     <div className="space-y-1">
@@ -5113,7 +5089,7 @@ export default function App() {
                             tech.pin = val;
                           }
                         }}
-                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-1.5 px-2.5 font-mono"
+                        className="w-full dark-input rounded-lg py-1.5 px-2.5 font-mono"
                       />
                     </div>
                     <div className="space-y-1">
@@ -5124,7 +5100,7 @@ export default function App() {
                         onChange={(e) => {
                           tech.specialty = e.target.value;
                         }}
-                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-1.5 px-2.5"
+                        className="w-full dark-input rounded-lg py-1.5 px-2.5"
                       />
                     </div>
                     <div className="space-y-1">
@@ -5134,7 +5110,7 @@ export default function App() {
                         onChange={(e) => {
                           tech.locationId = e.target.value;
                         }}
-                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-1.5 px-2.5"
+                        className="w-full dark-input rounded-lg py-1.5 px-2.5"
                       >
                         {locations.map(loc => (
                           <option key={loc.id} value={loc.id}>{loc.name}</option>
@@ -5148,7 +5124,7 @@ export default function App() {
                         onChange={(e) => {
                           tech.preferredDay = e.target.value;
                         }}
-                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg py-1.5 px-2.5"
+                        className="w-full dark-input rounded-lg py-1.5 px-2.5"
                       >
                         <option value="None">None (Random Assignments)</option>
                         <option value="Monday">Monday</option>

@@ -1,28 +1,11 @@
 import { signStaffSession } from './_auth.js';
 import { verifyAdminPassword } from './_adminPassword.js';
-
-function loadTechnicianPins() {
-  const raw = process.env.TECHNICIAN_PINS_JSON;
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed;
-    if (parsed && typeof parsed === 'object') {
-      return Object.entries(parsed).map(([pin, info]) => ({
-        pin: String(pin),
-        ...(typeof info === 'object' && info ? info : { name: String(info) }),
-      }));
-    }
-  } catch {
-    /* ignore */
-  }
-  return [];
-}
+import { loadAllTechnicianPins } from './_staffConfig.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -60,7 +43,7 @@ export default async function handler(req, res) {
   }
 
   if (mode === 'technician') {
-    const pins = loadTechnicianPins();
+    const pins = await loadAllTechnicianPins();
     if (pins.length === 0) {
       return res.status(503).json({ error: 'Technician login is not configured.' });
     }

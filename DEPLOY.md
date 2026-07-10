@@ -11,7 +11,8 @@ Add these in **Vercel → onecmd-warehouse → Settings → Environment Variable
 | `VITE_SUPABASE_SERVICE_ROLE_KEY` | *(from Supabase → Project Settings → API — keep secret)* |
 | `SESSION_JWT_SECRET` | Random string, **min 32 characters** — signs staff session tokens |
 | `ADMIN_PASSWORD` or `SUPER_ADMIN_PASSWORD` | Super Admin login password (not hardcoded in app) |
-| `TECHNICIAN_PINS_JSON` | JSON array of technician PINs, e.g. `[{"pin":"1234","id":"tech-ali","name":"Ali Baba"},{"pin":"5678","id":"tech-dave","name":"Dave Smith"}]` |
+| `TECHNICIAN_PINS_JSON` | *(Optional bootstrap)* Legacy JSON array of technician PINs. New staff registered via Access Governance are stored in Supabase and work for login automatically. |
+| `RESEND_API_KEY` | *(Optional)* Sends onboarding PIN emails. Without it, registration still succeeds and the PIN is shown on screen. |
 | `OPENAI_API_KEY` | OpenAI API key for sticker/sidewall/stack AI parsing |
 
 After saving, **Redeploy** the latest `main` branch.
@@ -40,7 +41,17 @@ On **atk-custom-site** Vercel project, add the same `VITE_SUPABASE_URL` and `VIT
 ### Technician login
 
 - Login mode: **Technician**
-- PIN: must match an entry in `TECHNICIAN_PINS_JSON`
+- PIN: must match a staff profile in Supabase (`CONFIG-EMPLOYEES` row) or legacy `TECHNICIAN_PINS_JSON`
+
+### Registering staff (Super Admin)
+
+1. Log in as **Super Admin** (uses `ADMIN_PASSWORD`).
+2. Open **Access Governance** from the dashboard.
+3. Fill in Name + Email, then click **Register & Email Onboarding PIN**.
+4. The server saves the profile to Supabase and emails the 4-digit PIN (or shows it on screen if email is not configured).
+5. The new technician can log in immediately with that PIN — no manual env update needed.
+
+Staff profiles are stored in Supabase `tires_catalog` row `sku = 'CONFIG-EMPLOYEES'` inside the `location_counts.technicians[]` JSON array.
 
 ## Local development
 
