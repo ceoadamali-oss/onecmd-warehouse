@@ -1,5 +1,6 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { Camera } from 'lucide-react';
+import { compressImageForScan, readFileAsDataUrl } from '../lib/imageStudio';
 
 export type ScanAccent = 'lime' | 'cyan' | 'amber' | 'violet' | 'emerald';
 
@@ -19,18 +20,25 @@ export function ScanViewfinder({
   onCapture,
 }: ScanViewfinderProps) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const [compressing, setCompressing] = useState(false);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result === 'string') {
-        onCapture(reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
     e.target.value = '';
+    setCompressing(true);
+    try {
+      const compressed = await compressImageForScan(file);
+      onCapture(compressed);
+    } catch {
+      try {
+        onCapture(await readFileAsDataUrl(file));
+      } catch {
+        // User can retake if both compression and read fail
+      }
+    } finally {
+      setCompressing(false);
+    }
   };
 
   return (
@@ -38,7 +46,7 @@ export function ScanViewfinder({
       <button
         type="button"
         onClick={() => fileRef.current?.click()}
-        className={`scan-viewfinder scan-viewfinder--${accent}${scanning ? ' is-scanning' : ''}`}
+        className={`scan-viewfinder scan-viewfinder--${accent}${scanning || compressing ? ' is-scanning' : ''}`}
         aria-label={label}
       >
         <div className="scan-viewfinder__frame">

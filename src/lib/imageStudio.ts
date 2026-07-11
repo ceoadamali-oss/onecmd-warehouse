@@ -67,3 +67,37 @@ export function readFileAsDataUrl(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
+
+/** Conservative resize for warehouse sticker scans — keeps OCR detail, cuts payload size. */
+const SCAN_MAX_WIDTH = 1600;
+const SCAN_JPEG_QUALITY = 0.85;
+
+export async function compressDataUrlForScan(dataUrl: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > SCAN_MAX_WIDTH) {
+        height = Math.round(height * (SCAN_MAX_WIDTH / width));
+        width = SCAN_MAX_WIDTH;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('Canvas not supported'));
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', SCAN_JPEG_QUALITY));
+    };
+    img.onerror = () => reject(new Error('Failed to load image for compression'));
+    img.src = dataUrl;
+  });
+}
+
+export async function compressImageForScan(file: File): Promise<string> {
+  const dataUrl = await readFileAsDataUrl(file);
+  return compressDataUrlForScan(dataUrl);
+}
