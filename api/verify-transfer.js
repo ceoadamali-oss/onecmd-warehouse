@@ -100,7 +100,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Database configuration error.' });
   }
 
-  const session = requireStaffAuth(req, res);
+  const session = await requireStaffAuth(req, res);
   if (!session) return;
 
   const body = req.body || {};

@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { createClient } from '@supabase/supabase-js';
 
 function getSecret() {
   const secret = process.env.SESSION_JWT_SECRET || process.env.MANAGER_SESSION_SECRET;
@@ -61,25 +62,68 @@ export function readBearerToken(req) {
   return header.slice(7).trim();
 }
 
-export function requireStaffAuth(req, res, options) {
+export async function requireStaffAuth(req, res, options) {
   const token = readBearerToken(req);
   if (!token) {
     res.status(401).json({ error: 'Authentication required.' });
     return null;
   }
 
+  // 1. Try custom session token first
   const verified = verifyStaffSession(token);
-  if (!verified.ok) {
-    res.status(401).json({ error: verified.error });
-    return null;
+  if (verified.ok) {
+    if (options?.roles && !options.roles.includes(verified.session.role)) {
+      res.status(403).json({ error: 'Insufficient permissions.' });
+      return null;
+    }
+    return verified.session;
   }
 
-  if (options?.roles && !options.roles.includes(verified.session.role)) {
-    res.status(403).json({ error: 'Insufficient permissions.' });
+  // 2. Try Supabase Auth token
+  try {
+    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
+    const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error || !user) {
+      res.status(401).json({ error: 'Invalid or expired session token.' });
+      return null;
+    }
+
+    const { data: profile, error: profileErr } = await supabase
+      .from('staff_profiles')
+      .select('role, username')
+      .eq('user_id', user.id)
+      .single();
+
+    if (profileErr || !profile) {
+      res.status(403).json({ error: 'Staff profile not configured in database.' });
+      return null;
+    }
+
+    const roleMap = {
+      'super_admin': 'SUPER_ADMIN',
+      'warehouse_employee': 'TECHNICIAN'
+    };
+
+    const session = {
+      username: profile.username || user.email,
+      role: roleMap[profile.role] || 'TECHNICIAN',
+      exp: Date.now() + 12 * 60 * 60 * 1000
+    };
+
+    if (options?.roles && !options.roles.includes(session.role)) {
+      res.status(403).json({ error: 'Insufficient permissions.' });
+      return null;
+    }
+
+    return session;
+  } catch (err) {
+    console.error('[requireStaffAuth] Supabase verification failed:', err);
+    res.status(401).json({ error: 'Invalid token.' });
     return null;
   }
-
-  return verified.session;
 }
 
 export function isSuperAdminSession(session) {

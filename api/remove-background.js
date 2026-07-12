@@ -19,7 +19,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  if (!requireStaffAuth(req, res)) return;
+  if (!await requireStaffAuth(req, res)) return;
 
   const { base64Image } = req.body;
   if (!base64Image) {

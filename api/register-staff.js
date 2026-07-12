@@ -60,7 +60,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const session = requireStaffAuth(req, res);
+  const session = await requireStaffAuth(req, res);
   if (!session) return;
   if (!isSuperAdminSession(session)) {
     return res.status(403).json({ error: 'Only Super Admin can manage staff.' });

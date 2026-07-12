@@ -107,7 +107,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Database configuration error.' });
   }
 
-  if (!requireStaffAuth(req, res)) return;
+  if (!await requireStaffAuth(req, res)) return;
 
   const body = req.body || {};
   const action = body.action || 'sync';
