@@ -31,3 +31,6 @@ dist-ssr
 # Vercel local project metadata
 .vercel
 
+# Local scratch and test scripts
+scratch/
+

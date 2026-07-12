@@ -12,50 +12,75 @@ function base64ToBuffer(base64Str) {
   return Buffer.from(cleanBase64, 'base64');
 }
 
-// Helper function to update catalog stock values inside Supabase jsonb
-async function serverUpdateStockLevel(supabaseClient, sku, type, locationId, diff) {
+// Authoritative Inventory Write Path (H3-BLOCK)
+async function serverUpdateStockLevel(supabaseClient, sku, type, locationId, diff, productId) {
   const activeLocalLocations = ['moncton', 'oromocto', 'saint-john', 'fredericton', 'otown'];
   if (!locationId || !activeLocalLocations.includes(locationId)) {
-    console.log(`ℹ️ [API] Skipping stock update for non-local or empty location: ${locationId}`);
+    console.log(`ℹ️ [API] Skipping stock update for non-local location: ${locationId}`);
     return null;
   }
 
-  const table = type === 'tire' ? 'tires_catalog' : 'wheels_catalog';
+  // Ensure product ID exists
+  if (!productId) {
+    const { data: master } = await supabaseClient
+      .from('product_master')
+      .select('id')
+      .eq('master_sku', sku)
+      .maybeSingle();
+    if (master) productId = master.id;
+  }
 
-  const { data, error } = await supabaseClient
-    .from(table)
-    .select('location_counts, stock')
-    .eq('sku', sku)
+  if (!productId) {
+    throw new Error(`Master product for SKU ${sku} not found.`);
+  }
+
+  // 1. Fetch current status & quantity from product_location_inventory
+  const { data: pliRow, error: pliErr } = await supabaseClient
+    .from('product_location_inventory')
+    .select('quantity, inventory_status')
+    .eq('product_id', productId)
+    .eq('location_id', locationId)
     .maybeSingle();
 
-  if (error) {
-    throw new Error(`Could not read stock for ${sku}: ${error.message}`);
-  }
-  if (!data) {
-    throw new Error(`SKU ${sku} not found in catalog — stock was not updated.`);
+  if (pliErr) throw pliErr;
+
+  const currentQty = pliRow ? pliRow.quantity : null;
+  const currentStatus = pliRow ? pliRow.inventory_status : 'pending';
+
+  let newQty;
+  let newStatus = currentStatus;
+
+  // Initialize stock for pending branches upon transaction (H3-BLOCK)
+  if (currentStatus === 'pending' || currentStatus === 'not-counted') {
+    newQty = Math.max(0, diff);
+    newStatus = 'complete';
+  } else {
+    newQty = Math.max(0, (currentQty || 0) + diff);
+    newStatus = 'complete';
   }
 
-  const currentCounts = data.location_counts || {};
-  const newLocCount = Math.max(0, (currentCounts[locationId] || 0) + diff);
-  const newCounts = {
-    ...currentCounts,
-    [locationId]: newLocCount,
-  };
-  const newTotal = Object.values(newCounts).reduce((a, b) => a + (parseInt(String(b), 10) || 0), 0);
+  // 2. Upsert authoritative product_location_inventory
+  const { error: upsertErr } = await supabaseClient
+    .from('product_location_inventory')
+    .upsert({
+      product_id: productId,
+      location_id: locationId,
+      quantity: newQty,
+      inventory_status: newStatus,
+      last_counted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }, {
+      onConflict: 'product_id,location_id'
+    });
 
-  const { error: updateError } = await supabaseClient
-    .from(table)
-    .update({
-      location_counts: newCounts,
-      stock: newTotal,
-    })
-    .eq('sku', sku);
-
-  if (updateError) {
-    throw new Error(`Could not update stock for ${sku}: ${updateError.message}`);
+  if (upsertErr) {
+    throw new Error(`Failed to update authoritative PLI: ${upsertErr.message}`);
   }
-  
-  return { newCounts, newTotal };
+
+  // 3. Recalculate Master Total Stock (database trigger will sync legacy mirror automatically)
+  await supabaseClient.rpc('recalculate_master_stock', { p_product_id: productId });
+
+  return { newTotal: newQty };
 }
 
 export default async function handler(req, res) {
@@ -79,14 +104,12 @@ export default async function handler(req, res) {
 
   if (!supabase) {
     console.error('❌ Supabase credentials missing in serverless environment variables!');
-    return res.status(500).json({ error: 'Database configuration error. Please check your Vercel Environment Variables.' });
+    return res.status(500).json({ error: 'Database configuration error.' });
   }
 
   if (!requireStaffAuth(req, res)) return;
 
   const body = req.body || {};
-  
-  // Decide which transaction action to execute: 'sync' (default), 'edit', or 'undo'
   const action = body.action || 'sync';
 
   // --- ACTION 1: SYNC TRANSACTION (Receive / Move) ---
@@ -95,182 +118,140 @@ export default async function handler(req, res) {
     const newProduct = body.newProduct || null;
 
     if (!tx || !tx.sku || !tx.product_type || !tx.transaction_type || !tx.quantity) {
-      return res.status(400).json({ error: 'Missing required transaction fields (sku, product_type, transaction_type, quantity)' });
+      return res.status(400).json({ error: 'Missing required transaction fields' });
     }
 
-    const skuKey = tx.sku.toUpperCase().trim();
+    const skuKeyInput = tx.sku.toUpperCase().trim();
+    let skuKey = skuKeyInput;
+    let productId = null;
+    let skuRedirected = false;
+    let aliasUsed = null;
+
+    // Check confirmed active aliases
+    try {
+      const { data: aliasRecord } = await supabase
+        .from('product_sku_aliases')
+        .select('product_id, alias_sku, product_master ( master_sku )')
+        .eq('alias_sku', skuKeyInput)
+        .eq('status', 'active')
+        .maybeSingle();
+
+      if (aliasRecord) {
+        productId = aliasRecord.product_id;
+        skuKey = aliasRecord.product_master?.master_sku || skuKey;
+        skuRedirected = true;
+        aliasUsed = skuKeyInput;
+      } else {
+        const { data: masterRecord } = await supabase
+          .from('product_master')
+          .select('id')
+          .eq('master_sku', skuKeyInput)
+          .maybeSingle();
+        
+        if (masterRecord) {
+          productId = masterRecord.id;
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to resolve SKU redirect:', err.message);
+    }
+
     const isWheel = tx.product_type === 'wheel';
     const table = isWheel ? 'wheels_catalog' : 'tires_catalog';
 
     try {
-      console.log(`⚡ [API Serverless] Syncing transaction for SKU: ${skuKey}...`);
-      
-      const { data: existingItem, error: checkError } = await supabase
+      // 1. Create or Update details in authoritative product_master first
+      let catalogName = `Received Catalog SKU: ${skuKey}`;
+      let brandName = 'Unknown Brand';
+      let sizeValue = 'N/A';
+      let typeValue = 'All-Season';
+      let winterApprovedVal = false;
+
+      if (newProduct) {
+        brandName = newProduct.brand || brandName;
+        sizeValue = newProduct.size || sizeValue;
+        typeValue = newProduct.season || typeValue;
+        winterApprovedVal = !!newProduct.winterApproved;
+        catalogName = `${brandName} ${newProduct.model || ''}`;
+      }
+
+      if (!productId) {
+        const { data: newPM, error: pmErr } = await supabase
+          .from('product_master')
+          .insert({
+            product_type: tx.product_type,
+            master_sku: skuKey,
+            brand: brandName,
+            model: newProduct ? newProduct.model : 'Generic Product',
+            size: sizeValue,
+            price: isWheel ? 180 : 120,
+            stock: 0,
+            winter_approved: winterApprovedVal,
+            specifications: newProduct ? { ...newProduct } : {},
+            inventory_status: 'pending',
+            version: 1
+          })
+          .select('id')
+          .single();
+
+        if (!pmErr && newPM) {
+          productId = newPM.id;
+        }
+      } else {
+        await supabase
+          .from('product_master')
+          .update({
+            brand: brandName,
+            model: newProduct ? newProduct.model : 'Generic Product',
+            size: sizeValue,
+            winter_approved: winterApprovedVal,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', productId);
+      }
+
+      // 2. Keep tires_catalog/wheels_catalog mirror updated
+      const { data: existingItem } = await supabase
         .from(table)
         .select('sku, brand, name, size, image')
         .eq('sku', skuKey)
         .maybeSingle();
 
-      if (checkError) throw checkError;
-      const itemExists = !!existingItem;
+      let publicImageUrl = existingItem ? existingItem.image : '';
 
-      if (itemExists) {
-        console.log(`⚡ [API Serverless] Item exists for SKU ${skuKey}. Checking if details need updating...`);
-        const needsUpdate = 
-          !existingItem.brand || 
-          existingItem.brand.toLowerCase() === 'generic' || 
-          existingItem.brand.toLowerCase() === 'unknown brand' ||
-          !existingItem.name || 
-          existingItem.name.includes('Received Catalog SKU') ||
-          existingItem.name.includes('Generic') ||
-          (!existingItem.image && newProduct && newProduct.productPhoto);
+      if (newProduct && newProduct.productPhoto) {
+        try {
+          const buffer = base64ToBuffer(newProduct.productPhoto);
+          const filePath = `${skuKey}.jpg`;
+          await supabase.storage.createBucket('product-images', { public: true }).catch(() => {});
+          const { error: uploadErr } = await supabase.storage
+            .from('product-images')
+            .upload(filePath, buffer, { contentType: 'image/jpeg', upsert: true });
 
-        if (needsUpdate) {
-          console.log(`⚡ [API Serverless] Updating incomplete catalog item details for SKU: ${skuKey}...`);
-          let publicImageUrl = existingItem.image || '';
-
-          if (newProduct && newProduct.productPhoto) {
-            try {
-              const buffer = base64ToBuffer(newProduct.productPhoto);
-              const filePath = `${skuKey}.jpg`;
-              await supabase.storage.createBucket('product-images', { public: true }).catch(() => {});
-              const { error: uploadErr } = await supabase.storage
-                .from('product-images')
-                .upload(filePath, buffer, {
-                  contentType: 'image/jpeg',
-                  upsert: true
-                });
-
-              if (!uploadErr) {
-                const { data: urlData } = supabase.storage
-                  .from('product-images')
-                  .getPublicUrl(filePath);
-                publicImageUrl = urlData.publicUrl;
-              }
-            } catch (imgErr) {
-              console.error("❌ Image upload process failed:", imgErr);
-            }
+          if (!uploadErr) {
+            const { data: urlData } = supabase.storage.from('product-images').getPublicUrl(filePath);
+            publicImageUrl = urlData.publicUrl;
           }
-
-          let catalogName = existingItem.name;
-          let brandName = existingItem.brand;
-          let sizeValue = existingItem.size;
-          let typeValue = 'All-Season';
-          let winterApprovedVal = false;
-
-          if (newProduct) {
-            brandName = newProduct.brand || brandName;
-            sizeValue = newProduct.size || sizeValue;
-            typeValue = newProduct.season || typeValue;
-            winterApprovedVal = !!newProduct.winterApproved;
-
-            catalogName = `${brandName} ${newProduct.model || ''}`;
-            if (isWheel) {
-              if (newProduct.finish) catalogName += ` ${newProduct.finish}`;
-              catalogName += ` (${sizeValue}`;
-              if (newProduct.bolt_pattern) catalogName += ` PCD:${newProduct.bolt_pattern}`;
-              if (newProduct.offset) catalogName += ` ET:${newProduct.offset}`;
-              if (newProduct.center_bore) catalogName += ` CB:${newProduct.center_bore}`;
-              catalogName += ')';
-            } else {
-              if (newProduct.ply_rating && newProduct.ply_rating !== 'N/A') {
-                catalogName += ` (${newProduct.ply_rating})`;
-              }
-              if (winterApprovedVal) catalogName += ' 3PMSF';
-            }
-          }
-
-          const updatePayload = {
-            brand: brandName,
-            size: sizeValue,
-            name: catalogName,
-            image: publicImageUrl || existingItem.image
-          };
-          if (!isWheel && typeValue) updatePayload.type = typeValue;
-
-          const { error: updateErr } = await supabase.from(table).update(updatePayload).eq('sku', skuKey);
-          if (updateErr) {
-            console.error(`❌ Failed to update catalog item ${skuKey}:`, updateErr.message);
-          } else {
-            console.log(`✔ Successfully updated catalog item ${skuKey} with clean details.`);
-          }
+        } catch (imgErr) {
+          console.error("Image upload failed:", imgErr);
         }
       }
 
-      if (!itemExists) {
-        console.log(`⚡ [API Serverless] Creating missing catalog item for SKU: ${skuKey}...`);
-        let publicImageUrl = '';
+      const catalogPayload = {
+        sku: skuKey,
+        brand: brandName,
+        size: sizeValue,
+        name: catalogName,
+        price: isWheel ? 180 : 120,
+        image: publicImageUrl || (existingItem ? existingItem.image : ''),
+        location_counts: existingItem ? existingItem.location_counts : {}
+      };
+      if (!isWheel) catalogPayload.type = typeValue;
 
-        if (newProduct && newProduct.productPhoto) {
-          try {
-            const buffer = base64ToBuffer(newProduct.productPhoto);
-            const filePath = `${skuKey}.jpg`;
-            await supabase.storage.createBucket('product-images', { public: true }).catch(() => {});
-            const { error: uploadErr } = await supabase.storage
-              .from('product-images')
-              .upload(filePath, buffer, {
-                contentType: 'image/jpeg',
-                upsert: true
-              });
 
-            if (!uploadErr) {
-              const { data: urlData } = supabase.storage
-                .from('product-images')
-                .getPublicUrl(filePath);
-              publicImageUrl = urlData.publicUrl;
-            }
-          } catch (imgErr) {
-            console.error("❌ Image upload process failed:", imgErr);
-          }
-        }
+      await supabase.from(table).upsert(catalogPayload);
 
-        let catalogName = '';
-        let brandName = 'Unknown Brand';
-        let sizeValue = 'N/A';
-        let typeValue = 'All-Season';
-        let winterApprovedVal = false;
-
-        if (newProduct) {
-          brandName = newProduct.brand || brandName;
-          sizeValue = newProduct.size || sizeValue;
-          typeValue = newProduct.season || typeValue;
-          winterApprovedVal = !!newProduct.winterApproved;
-
-          catalogName = `${brandName} ${newProduct.model || ''}`;
-          if (isWheel) {
-            if (newProduct.finish) catalogName += ` ${newProduct.finish}`;
-            catalogName += ` (${sizeValue}`;
-            if (newProduct.bolt_pattern) catalogName += ` PCD:${newProduct.bolt_pattern}`;
-            if (newProduct.offset) catalogName += ` ET:${newProduct.offset}`;
-            if (newProduct.center_bore) catalogName += ` CB:${newProduct.center_bore}`;
-            catalogName += ')';
-          } else {
-            if (newProduct.ply_rating && newProduct.ply_rating !== 'N/A') {
-              catalogName += ` (${newProduct.ply_rating})`;
-            }
-            if (winterApprovedVal) catalogName += ' 3PMSF';
-          }
-        } else {
-          catalogName = `Received Catalog SKU: ${skuKey}`;
-        }
-
-        const insertPayload = {
-          sku: skuKey,
-          brand: brandName,
-          size: sizeValue,
-          name: catalogName,
-          price: isWheel ? 180 : 120,
-          stock: 0,
-          image: publicImageUrl,
-          location_counts: {}
-        };
-
-        if (!isWheel) insertPayload.type = typeValue;
-
-        const { error: upsertErr } = await supabase.from(table).upsert(insertPayload);
-        if (upsertErr) throw upsertErr;
-      }
-
+      // 3. Write transaction log
       const { data: insertedData, error: txError } = await supabase.from('inventory_transactions').insert({
         id: tx.id || undefined,
         sku: skuKey,
@@ -280,23 +261,28 @@ export default async function handler(req, res) {
         from_location: tx.from_location || null,
         to_location: tx.to_location || null,
         status: tx.status || 'completed',
-        supplier_container: tx.supplier_container || '',
         employee_id: tx.employee_id,
         notes: tx.notes || '',
-        created_at: tx.created_at || new Date().toISOString()
+        created_at: tx.created_at || new Date().toISOString(),
+        product_id: productId,
+        original_sku: skuKeyInput,
+        resolved_master_sku: skuKey,
+        sku_redirected: skuRedirected,
+        alias_used: aliasUsed
       }).select().single();
 
       if (txError) throw txError;
 
+      // 4. Update stock inside authoritative PLI
       let stockUpdateResult = null;
       if (tx.transaction_type === 'receive' && tx.status === 'completed') {
-        stockUpdateResult = await serverUpdateStockLevel(supabase, skuKey, tx.product_type, tx.to_location, tx.quantity);
+        stockUpdateResult = await serverUpdateStockLevel(supabase, skuKey, tx.product_type, tx.to_location, tx.quantity, productId);
       } else if (tx.transaction_type === 'transfer' && tx.status === 'completed') {
-        const subRes = await serverUpdateStockLevel(supabase, skuKey, tx.product_type, tx.from_location, -tx.quantity);
-        const addRes = await serverUpdateStockLevel(supabase, skuKey, tx.product_type, tx.to_location, tx.quantity);
+        const subRes = await serverUpdateStockLevel(supabase, skuKey, tx.product_type, tx.from_location, -tx.quantity, productId);
+        const addRes = await serverUpdateStockLevel(supabase, skuKey, tx.product_type, tx.to_location, tx.quantity, productId);
         stockUpdateResult = { subRes, addRes };
       } else if (tx.transaction_type === 'transfer' && tx.status === 'pending') {
-        stockUpdateResult = await serverUpdateStockLevel(supabase, skuKey, tx.product_type, tx.from_location, -tx.quantity);
+        stockUpdateResult = await serverUpdateStockLevel(supabase, skuKey, tx.product_type, tx.from_location, -tx.quantity, productId);
       }
 
       return res.status(200).json({ 
@@ -309,111 +295,97 @@ export default async function handler(req, res) {
     }
   }
 
-  // --- ACTION 2: EDIT TRANSACTION (Manager Override) ---
-  if (action === 'edit') {
-    const { transactionId, newQuantity, notes, managerPin } = body;
-    const pinCheck = verifyAdminPassword(managerPin);
-    if (!pinCheck.configured) {
-      return res.status(503).json({ error: 'Manager override is not configured.' });
-    }
-    if (!pinCheck.ok) {
-      return res.status(401).json({ error: 'Invalid Manager Override PIN. Access denied.' });
-    }
-
-    if (!transactionId || typeof newQuantity !== 'number' || newQuantity <= 0) {
-      return res.status(400).json({ error: 'Missing or invalid parameters (transactionId, newQuantity)' });
+  // --- ACTION 1B: SUBMIT TRANSFER BATCH ---
+  if (action === 'transfer_batch') {
+    const { transferGroupId, fromLocation, toLocation, employeeId, notes, managerOverride, managerId, overrideReason, items } = body;
+    if (!transferGroupId || !fromLocation || !toLocation || !employeeId || !items || !Array.isArray(items)) {
+      return res.status(400).json({ error: 'Missing required transfer batch parameters.' });
     }
 
     try {
-      const { data: tx, error: fetchErr } = await supabase
-        .from('inventory_transactions')
-        .select('*')
-        .eq('id', transactionId)
-        .maybeSingle();
+      const { data, error } = await supabase.rpc('submit_transfer_batch', {
+        p_transfer_group_id: transferGroupId,
+        p_from_location: fromLocation,
+        p_to_location: toLocation,
+        p_employee_id: employeeId,
+        p_notes: notes || '',
+        p_manager_override: !!managerOverride,
+        p_manager_id: managerId || null,
+        p_override_reason: overrideReason || null,
+        p_items: items
+      });
 
-      if (fetchErr) throw fetchErr;
+      if (error) throw error;
+      return res.status(200).json(data);
+    } catch (error) {
+      console.error('❌ [API Serverless] Submit transfer batch failed:', error.message);
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // --- ACTION 2: EDIT TRANSACTION ---
+  if (action === 'edit') {
+    const { transactionId, newQuantity, notes, managerPin } = body;
+    const pinCheck = verifyAdminPassword(managerPin);
+    if (!pinCheck.configured || !pinCheck.ok) {
+      return res.status(401).json({ error: 'Access denied.' });
+    }
+
+    try {
+      const { data: tx } = await supabase.from('inventory_transactions').select('*').eq('id', transactionId).maybeSingle();
       if (!tx) return res.status(404).json({ error: 'Transaction not found' });
 
       const diff = newQuantity - tx.quantity;
 
       let stockUpdateResult = null;
       if (tx.transaction_type === 'receive' && tx.status === 'completed') {
-        stockUpdateResult = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.to_location, diff);
+        stockUpdateResult = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.to_location, diff, tx.product_id);
       } else if (tx.transaction_type === 'transfer' && tx.status === 'completed') {
-        const subSrc = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.from_location, -diff);
-        const addDest = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.to_location, diff);
+        const subSrc = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.from_location, -diff, tx.product_id);
+        const addDest = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.to_location, diff, tx.product_id);
         stockUpdateResult = { subSrc, addDest };
       } else if (tx.transaction_type === 'transfer' && tx.status === 'pending') {
-        stockUpdateResult = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.from_location, -diff);
+        stockUpdateResult = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.from_location, -diff, tx.product_id);
       }
 
-      const { data: updatedTx, error: updateErr } = await supabase
+      const { data: updatedTx } = await supabase
         .from('inventory_transactions')
         .update({ quantity: newQuantity, notes: notes || tx.notes })
         .eq('id', transactionId)
         .select()
         .single();
 
-      if (updateErr) throw updateErr;
-
-      return res.status(200).json({ 
-        success: true, 
-        transaction: updatedTx,
-        stockUpdate: stockUpdateResult 
-      });
+      return res.status(200).json({ success: true, transaction: updatedTx, stockUpdate: stockUpdateResult });
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
   }
 
-  // --- ACTION 3: UNDO TRANSACTION (Manager Override Delete) ---
+  // --- ACTION 3: UNDO TRANSACTION ---
   if (action === 'undo') {
     const { transactionId, managerPin } = body;
     const pinCheck = verifyAdminPassword(managerPin);
-    if (!pinCheck.configured) {
-      return res.status(503).json({ error: 'Manager override is not configured.' });
-    }
-    if (!pinCheck.ok) {
-      return res.status(401).json({ error: 'Invalid Manager Override PIN. Access denied.' });
-    }
-
-    if (!transactionId) {
-      return res.status(400).json({ error: 'Missing transactionId parameter' });
+    if (!pinCheck.configured || !pinCheck.ok) {
+      return res.status(401).json({ error: 'Access denied.' });
     }
 
     try {
-      const { data: tx, error: fetchErr } = await supabase
-        .from('inventory_transactions')
-        .select('*')
-        .eq('id', transactionId)
-        .maybeSingle();
-
-      if (fetchErr) throw fetchErr;
+      const { data: tx } = await supabase.from('inventory_transactions').select('*').eq('id', transactionId).maybeSingle();
       if (!tx) return res.status(404).json({ error: 'Transaction not found' });
 
       let stockRevertResult = null;
       if (tx.transaction_type === 'receive' && tx.status === 'completed') {
-        stockRevertResult = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.to_location, -tx.quantity);
+        stockRevertResult = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.to_location, -tx.quantity, tx.product_id);
       } else if (tx.transaction_type === 'transfer' && tx.status === 'completed') {
-        const addSrc = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.from_location, tx.quantity);
-        const subDest = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.to_location, -tx.quantity);
+        const addSrc = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.from_location, tx.quantity, tx.product_id);
+        const subDest = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.to_location, -tx.quantity, tx.product_id);
         stockRevertResult = { addSrc, subDest };
       } else if (tx.transaction_type === 'transfer' && tx.status === 'pending') {
-        stockRevertResult = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.from_location, tx.quantity);
+        stockRevertResult = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.from_location, tx.quantity, tx.product_id);
       }
 
-      const { error: deleteErr } = await supabase
-        .from('inventory_transactions')
-        .delete()
-        .eq('id', transactionId);
-
-      if (deleteErr) throw deleteErr;
-
-      return res.status(200).json({ 
-        success: true, 
-        revertedTransaction: tx,
-        stockRevert: stockRevertResult 
-      });
+      await supabase.from('inventory_transactions').delete().eq('id', transactionId);
+      return res.status(200).json({ success: true, revertedTransaction: tx, stockRevert: stockRevertResult });
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }

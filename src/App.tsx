@@ -10,6 +10,8 @@ import {
   WifiOff, 
   Lock,
   Plus,
+  Minus,
+  Search,
   Inbox,
   Sparkles,
   BarChart3,
@@ -28,12 +30,15 @@ import {
   MapPin,
   ChevronDown,
   ImageIcon,
-  Truck
+  Truck,
+  FileSpreadsheet
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 import { parseTireSticker, parseTireSidewall, parseBulkStack, estimateStackCount, inferWinterApprovedFromCatalog } from './openaiClient';
 import type { TireStickerData } from './openaiClient';
 import { offlineStorage } from './offlineStorage';
+import { GlobalTransferDashboard } from './components/GlobalTransferDashboard';
+import { SubmitWarrantyForm } from './components/SubmitWarrantyForm';
 import type { PendingTransaction } from './offlineStorage';
 import { ScanViewfinder } from './components/ScanViewfinder';
 import { WinterApprovedToggle } from './components/WinterApprovedToggle';
@@ -43,7 +48,7 @@ import { BuildGalleryStudio } from './components/BuildGalleryStudio';
 import { GEOFENCE_RADIUS_KM, STORE_LOCATIONS, getPremisesStatus, isCatalogImageMissing } from './lib/storeLocations';
 import { authHeaders, clearStaffToken, setStaffToken } from './staffAuth';
 
-type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs' | 'timecard' | 'workforce' | 'schedule' | 'payroll' | 'permissions' | 'product-photos' | 'build-gallery';
+type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs' | 'timecard' | 'workforce' | 'schedule' | 'payroll' | 'permissions' | 'product-photos' | 'build-gallery' | 'global-transfers' | 'submit-warranty';
 
 type AppUser = {
   role: 'worker' | 'manager';
@@ -200,12 +205,23 @@ export default function App() {
   const [flagTx, setFlagTx] = useState<PendingTransaction | null>(null);
   const [flagNoteInput, setFlagNoteInput] = useState<string>('');
 
-  // Core Feature State: Transfer
+  // Core Feature State: Transfer Redesign
   const [transferDest, setTransferDest] = useState<string>('');
   const [transferPhoto, setTransferPhoto] = useState<string | null>(null);
-  const [transferSpecs, setTransferSpecs] = useState<TireStickerData | null>(null);
-  const [transferQty, setTransferQty] = useState<string>('');
   const [sendingTransfer, setSendingTransfer] = useState<boolean>(false);
+  
+  // Redesigned Transfer Cart & Workflow States
+  const [transferCart, setTransferCart] = useState<any[]>([]);
+  const [transferSearchQuery, setTransferSearchQuery] = useState<string>('');
+  const [transferSearchResults, setTransferSearchResults] = useState<any[]>([]);
+  const [searchingTransferProducts, setSearchingTransferProducts] = useState<boolean>(false);
+  const [selectedSearchProduct, setSelectedSearchProduct] = useState<any | null>(null);
+  const [searchQtyInput, setSearchQtyInput] = useState<string>('');
+  const [activeTransferStep, setActiveTransferStep] = useState<'setup' | 'cart' | 'review' | 'receipt'>('setup');
+  const [transferNotes, setTransferNotes] = useState<string>('');
+  const [transferReceipt, setTransferReceipt] = useState<any | null>(null);
+  const [activeTransferOption, setActiveTransferOption] = useState<'search' | 'sticker'>('search');
+
 
   // Core Feature State: Handshake Verification
   const [pendingTransfers, setPendingTransfers] = useState<PendingTransaction[]>([]);
@@ -1650,14 +1666,48 @@ export default function App() {
     }
   };
 
-  // STEP 2: Inter-Store Transfer
+  // STEP 2: Inter-Store Transfer Redesign
   const processTransferSticker = async (base64: string) => {
     setTransferPhoto(base64);
     setExtracting(true);
-    setTransferSpecs(null);
     try {
       const parsed = await parseTireSticker(base64);
-      setTransferSpecs(parsed);
+      
+      const generatedSku = formatSku(parsed.brand || 'Unknown', parsed.size || 'N/A', parsed.model || '');
+      
+      // Query if SKU exists in master catalog to get maxAvailable and image
+      const { data: pm } = await supabase
+        .from('product_master')
+        .select('*, product_location_inventory(*)')
+        .eq('master_sku', generatedSku)
+        .maybeSingle();
+
+      const pli = pm?.product_location_inventory?.find((l: any) => l.location_id === activeLocation);
+      const availableQty = pli ? pli.quantity : 0;
+
+      const newItem = {
+        sku: generatedSku,
+        brand: parsed.brand || 'Unknown Brand',
+        model: parsed.model || 'Generic Product',
+        size: parsed.size || 'N/A',
+        product_type: parsed.product_type || 'tire',
+        quantity: 1, // Default to 1
+        entryMethod: 'sticker' as const,
+        maxAvailable: availableQty,
+        image: pm?.image || ''
+      };
+
+      setTransferCart(prev => {
+        const idx = prev.findIndex(item => item.sku === newItem.sku);
+        if (idx !== -1) {
+          const updated = [...prev];
+          updated[idx].quantity = Math.min(updated[idx].maxAvailable, updated[idx].quantity + 1);
+          return updated;
+        }
+        return [...prev, newItem];
+      });
+      showTemporaryMessage('success', `Scanned sticker: Added 1x ${newItem.brand} ${newItem.model} to cart.`);
+      setTransferPhoto(null);
     } catch (err: any) {
       showTemporaryMessage('error', `AI label extraction failed: ${err.message}`);
     } finally {
@@ -1665,48 +1715,153 @@ export default function App() {
     }
   };
 
-  const handleSendTransfer = async () => {
-    if (!transferSpecs || !transferQty || !transferDest) return;
-    const qty = parseInt(transferQty);
-    if (isNaN(qty) || qty <= 0) {
-      showTemporaryMessage('error', 'Please enter a valid quantity.');
+  const performTransferSearch = async (query: string) => {
+    if (!query.trim()) {
+      setTransferSearchResults([]);
+      return;
+    }
+    setSearchingTransferProducts(true);
+    try {
+      const { data, error } = await supabase
+        .from('product_master')
+        .select('*, product_location_inventory(*)')
+        .or(`master_sku.ilike.%${query}%,brand.ilike.%${query}%,model.ilike.%${query}%,size.ilike.%${query}%`)
+        .limit(20);
+
+      if (error) throw error;
+      setTransferSearchResults(data || []);
+    } catch (err: any) {
+      console.error('Search failed:', err.message);
+    } finally {
+      setSearchingTransferProducts(false);
+    }
+  };
+
+  const addToCartFromSearch = (product: any, qty: number) => {
+    const pli = product.product_location_inventory?.find((l: any) => l.location_id === activeLocation);
+    const availableQty = pli ? pli.quantity : 0;
+
+    if (availableQty <= 0) {
+      showTemporaryMessage('error', `This product has 0 available items at ${locationName}.`);
       return;
     }
 
+    if (qty > availableQty) {
+      showTemporaryMessage('error', `Requested quantity exceeds available stock (${availableQty} max).`);
+      return;
+    }
+
+    const newItem = {
+      sku: product.master_sku,
+      brand: product.brand,
+      model: product.model,
+      size: product.size,
+      product_type: product.product_type,
+      quantity: qty,
+      entryMethod: 'search' as const,
+      maxAvailable: availableQty,
+      image: product.image || ''
+    };
+
+    setTransferCart(prev => {
+      const idx = prev.findIndex(item => item.sku === newItem.sku);
+      if (idx !== -1) {
+        const updated = [...prev];
+        updated[idx].quantity = Math.min(updated[idx].maxAvailable, updated[idx].quantity + qty);
+        return updated;
+      }
+      return [...prev, newItem];
+    });
+
+    showTemporaryMessage('success', `Added ${qty}x ${newItem.brand} ${newItem.model} to cart.`);
+    setSelectedSearchProduct(null);
+    setSearchQtyInput('');
+  };
+
+  const updateCartItemQty = (sku: string, newQty: number) => {
+    setTransferCart(prev => {
+      return prev.map(item => {
+        if (item.sku === sku) {
+          const qty = Math.max(1, Math.min(item.maxAvailable, newQty));
+          return { ...item, quantity: qty };
+        }
+        return item;
+      });
+    });
+  };
+
+  const removeCartItem = (sku: string) => {
+    setTransferCart(prev => prev.filter(item => item.sku !== sku));
+    showTemporaryMessage('success', 'Item removed from cart.');
+  };
+
+  const submitRedesignedTransferBatch = async () => {
+    if (transferCart.length === 0 || !transferDest) return;
     setSendingTransfer(true);
     try {
-      const generatedSku = formatSku(transferSpecs.brand, transferSpecs.size, transferSpecs.model || '');
+      const transferGroupId = `TRF-${Date.now()}`;
+      const employeeId = currentUser ? currentUser.name : activeLocation!;
+      const notes = transferNotes.trim();
 
-      const txData = {
-        sku: generatedSku,
-        product_type: 'tire' as const,
-        transaction_type: 'transfer' as const,
-        quantity: qty,
-        from_location: activeLocation!,
-        to_location: transferDest,
-        employee_id: currentUser ? currentUser.name : activeLocation!,
-        status: 'pending' as const // Two-step handshake remains pending until destination confirms receipt
+      const items = transferCart.map(item => ({
+        sku: item.sku,
+        product_type: item.product_type,
+        quantity: item.quantity,
+        entry_method: item.entryMethod
+      }));
+
+      const payload = {
+        action: 'transfer_batch',
+        transferGroupId,
+        fromLocation: activeLocation!,
+        toLocation: transferDest,
+        employeeId,
+        notes,
+        items
       };
 
       if (isOnline) {
-        await syncTransactionWithServer(txData);
-      } else {
-        offlineStorage.enqueue(txData);
-        setPendingSyncCount(offlineStorage.getQueue().length);
-      }
+        const response = await fetch('/api/transaction', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify(payload)
+        });
 
-      showTemporaryMessage('success', `Transfer initiated: ${qty}x ${transferSpecs.brand} tires marked "In Transit" to ${locations.find(l => l.id === transferDest)?.name}!`);
-      setTransferPhoto(null);
-      setTransferSpecs(null);
-      setTransferQty('');
-      setTransferDest('');
-      setActiveTab('dashboard');
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(errText);
+        }
+
+        const resData = await response.json();
+        if (!resData.success) {
+          throw new Error(resData.error || 'Server batch transfer submission failed');
+        }
+
+        setTransferReceipt({
+          transferNumber: transferGroupId,
+          dateTime: new Date().toLocaleString(),
+          source: locationName,
+          destination: locations.find(l => l.id === transferDest)?.name || transferDest,
+          employee: employeeId,
+          products: transferCart,
+          totalUnits: transferCart.reduce((acc, curr) => acc + curr.quantity, 0),
+          notes
+        });
+
+        setActiveTransferStep('receipt');
+        setTransferCart([]);
+        setTransferNotes('');
+        showTemporaryMessage('success', `Transfer ${transferGroupId} successfully shipped in transit!`);
+      } else {
+        showTemporaryMessage('error', 'Network offline. Batch transfers require an active network connection.');
+      }
     } catch (e: any) {
-      showTemporaryMessage('error', `Failed to send transfer: ${e.message}`);
+      showTemporaryMessage('error', `Failed to submit transfer: ${e.message}`);
     } finally {
       setSendingTransfer(false);
     }
   };
+
 
   // STEP 3: Confirm Pending Arrivals Handshake
   const handleConfirmReceipt = async () => {
@@ -2334,6 +2489,42 @@ export default function App() {
                       </div>
                     </div>
                     <span className="badge badge-violet text-xs">Governance</span>
+                  </button>
+
+                  {/* Global Transfer Control Center (Blue/Cyan) */}
+                  <button 
+                    type="button"
+                    onClick={() => setActiveTab('global-transfers')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-cyan-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20 text-cyan-400">
+                        <ArrowLeftRight className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">🌐 Global Transfer Control Center</span>
+                        <span className="action-card__sub">Monitor and audit all inter-store transfers & discrepancies</span>
+                      </div>
+                    </div>
+                    <span className="badge badge-blue text-xs font-semibold">Global Control</span>
+                  </button>
+
+                  {/* Submit Warranty Claim (Amber) */}
+                  <button 
+                    type="button"
+                    onClick={() => setActiveTab('submit-warranty')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-amber-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center border border-amber-500/20 text-amber-400">
+                        <FileSpreadsheet className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">🛡️ Submit Warranty Claim</span>
+                        <span className="action-card__sub">Register customer warranty request for manager/admin approval</span>
+                      </div>
+                    </div>
+                    <span className="badge badge-amber text-xs">Warranty</span>
                   </button>
 
                   {/* Receive Inventory (Lime) */}
@@ -3560,85 +3751,194 @@ export default function App() {
         {activeTab === 'transfer' && (
           <div className="space-y-6 flex-1 flex flex-col">
             <div className="flex items-center gap-2 mb-2">
-              <button onClick={() => { setActiveTab('dashboard'); setTransferPhoto(null); setTransferSpecs(null); setTransferQty(''); }} className="btn-secondary py-2 px-3">
+              <button 
+                onClick={() => { 
+                  if (activeTransferStep === 'cart') setActiveTransferStep('setup');
+                  else if (activeTransferStep === 'review') setActiveTransferStep('cart');
+                  else {
+                    setActiveTab('dashboard'); 
+                    setTransferDest(''); 
+                    setTransferCart([]);
+                    setActiveTransferStep('setup');
+                  }
+                }} 
+                className="btn-secondary py-2 px-3"
+              >
                 <ArrowLeftRight className="w-4 h-4 rotate-180" /> Back
               </button>
               <h2>Inter-Store Transfer</h2>
             </div>
 
-            <div className="glass-panel space-y-4">
-              <h3 className="text-xs font-semibold tracking-wider text-gray-400">Destination Location</h3>
-              <select 
-                value={transferDest}
-                onChange={e => setTransferDest(e.target.value)}
-                className="w-full"
-              >
-                <option value="" disabled>Select target store...</option>
-                {locations.filter(l => l.id !== activeLocation).map(loc => (
-                  <option key={loc.id} value={loc.id}>{loc.name}</option>
-                ))}
-              </select>
-            </div>
-
-            {transferDest && (
-              <>
-                {!transferPhoto ? (
-                  <div 
-                    onClick={() => transferFileRef.current?.click()}
-                    className="flex-1 border-2 border-dashed border-glass rounded-2xl flex flex-col items-center justify-center p-8 cursor-pointer hover:border-cyan-500/40 transition-all min-h-[250px]"
-                  >
-                    <Camera className="w-14 h-14 text-gray-500 mb-4" />
-                    <span className="font-semibold text-lg text-gray-300">Snap Transfer Tire Sticker</span>
-                    <input 
-                      type="file" 
-                      accept="image/*" 
-                      capture="environment" 
-                      ref={transferFileRef}
-                      onChange={e => handleFileChange(e, processTransferSticker)}
-                      className="hidden" 
-                    />
+            {/* STEP 1: SETUP (SELECT DESTINATION) */}
+            {activeTransferStep === 'setup' && (
+              <div className="glass-panel space-y-6 max-w-md mx-auto w-full">
+                <div className="text-center pb-2 border-b border-glass">
+                  <h3 className="text-sm font-semibold tracking-wider text-gray-400 uppercase">Transfer Details</h3>
+                </div>
+                
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between py-1">
+                    <span className="text-gray-400">Source Location:</span>
+                    <strong className="text-white">{locationName}</strong>
                   </div>
-                ) : (
-                  <div className="space-y-6 flex-1 flex flex-col">
-                    <div className="relative rounded-2xl overflow-hidden border border-glass max-h-[160px]">
-                      <img src={transferPhoto} alt="Transfer Label Preview" className="w-full h-full object-cover" />
-                      <button onClick={() => setTransferPhoto(null)} className="absolute top-2 right-2 btn-secondary py-2 px-3 text-xs">Retake</button>
+                  <div className="flex justify-between py-1">
+                    <span className="text-gray-400">Employee Name:</span>
+                    <strong className="text-white">{currentUser?.name || 'Technician'}</strong>
+                  </div>
+                  <div className="flex justify-between py-1">
+                    <span className="text-gray-400">Date & Time:</span>
+                    <strong className="text-white">{new Date().toLocaleDateString()}</strong>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Destination Location</label>
+                  <select 
+                    value={transferDest}
+                    onChange={e => setTransferDest(e.target.value)}
+                    className="w-full"
+                  >
+                    <option value="" disabled>Select target store...</option>
+                    {locations.filter(l => l.id !== activeLocation).map(loc => (
+                      <option key={loc.id} value={loc.id}>{loc.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <button 
+                  onClick={() => {
+                    if (transferDest) setActiveTransferStep('cart');
+                  }}
+                  disabled={!transferDest}
+                  className="w-full btn-primary py-3"
+                >
+                  Start Building Transfer
+                </button>
+              </div>
+            )}
+
+            {/* STEP 2: CART (ADD PRODUCTS & REVIEW CART) */}
+            {activeTransferStep === 'cart' && (
+              <div className="space-y-6 flex-1 flex flex-col">
+                {/* Destination info summary bar */}
+                <div className="glass-panel py-3 px-4 flex items-center justify-between text-sm">
+                  <div>
+                    <span className="text-gray-400">Transfer Target: </span>
+                    <strong className="text-cyan-400">{locations.find(l => l.id === transferDest)?.name}</strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Items: </span>
+                    <strong className="text-white">{transferCart.reduce((a, b) => a + b.quantity, 0)}</strong>
+                  </div>
+                </div>
+
+                {/* Entry Method Selector Option Buttons */}
+                <div className="grid grid-cols-2 gap-3 bg-glass-dark p-1 rounded-xl border border-glass">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTransferOption('search')}
+                    className={`py-2 px-3 text-xs font-semibold rounded-lg flex items-center justify-center gap-2 transition-all ${
+                      activeTransferOption === 'search' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    <Search className="w-3.5 h-3.5" />
+                    Option A: Search Product
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTransferOption('sticker')}
+                    className={`py-2 px-3 text-xs font-semibold rounded-lg flex items-center justify-center gap-2 transition-all ${
+                      activeTransferOption === 'sticker' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    Option B: Snap Sticker
+                  </button>
+                </div>
+
+                {/* Option A: Manual Product Search */}
+                {activeTransferOption === 'search' && (
+                  <div className="space-y-4">
+                    <div className="relative">
+                      <Search className="absolute left-3 top-3.5 w-4 h-4 text-gray-500" />
+                      <input 
+                        type="text" 
+                        placeholder="Search size, model, brand, SKU..."
+                        value={transferSearchQuery}
+                        onChange={e => {
+                          setTransferSearchQuery(e.target.value);
+                          performTransferSearch(e.target.value);
+                        }}
+                        className="pl-10 w-full"
+                      />
                     </div>
 
-                    {extracting && (
-                      <div className="glass-panel flex flex-col items-center justify-center py-8 space-y-4">
-                        <RotateCw className="w-10 h-10 text-cyan-400 animate-spin" />
-                        <div className="text-center font-medium">AI Loading Sticker Details...</div>
+                    {searchingTransferProducts && (
+                      <div className="text-center py-4 text-gray-400 text-sm">Searching catalog...</div>
+                    )}
+
+                    {transferSearchQuery && transferSearchResults.length === 0 && !searchingTransferProducts && (
+                      <div className="text-center py-4 text-gray-500 text-sm">No matching catalog products found.</div>
+                    )}
+
+                    {transferSearchResults.length > 0 && (
+                      <div className="glass-panel max-h-[220px] overflow-y-auto space-y-2 p-2 border border-glass">
+                        {transferSearchResults.map(product => {
+                          const pli = product.product_location_inventory?.find((l: any) => l.location_id === activeLocation);
+                          const available = pli ? pli.quantity : 0;
+
+                          return (
+                            <div 
+                              key={product.id}
+                              onClick={() => {
+                                if (available > 0) {
+                                  setSelectedSearchProduct(product);
+                                  setSearchQtyInput('');
+                                } else {
+                                  showTemporaryMessage('error', 'Product has no stock at this store.');
+                                }
+                              }}
+                              className={`p-2.5 rounded-lg border border-glass flex items-center justify-between transition-all ${
+                                available > 0 ? 'cursor-pointer hover:bg-white/5 border-l-4 border-l-cyan-500' : 'opacity-40 cursor-not-allowed'
+                              }`}
+                            >
+                              <div className="text-xs space-y-0.5">
+                                <div className="font-semibold text-white">{product.brand} {product.model}</div>
+                                <div className="text-gray-400">Size: {product.size} | SKU: {product.master_sku}</div>
+                              </div>
+                              <div className="text-right">
+                                <span className={`badge ${available > 0 ? 'badge-blue' : 'badge-rose'} text-[10px]`}>
+                                  {available} Avail
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
 
-                    {transferSpecs && (
-                      <div className="glass-panel space-y-2 text-sm">
-                        <div className="font-bold text-cyan-400 border-b border-glass pb-1 mb-2">Transfer Item Match</div>
-                        <div>Tire: <strong>{transferSpecs.brand} {transferSpecs.model}</strong></div>
-                        <div>Size: <strong>{transferSpecs.size}</strong></div>
-                      </div>
-                    )}
-
-                    {transferSpecs && (
-                      <div className="space-y-4 mt-auto">
-                        <div className="glass-panel p-4 flex items-center justify-between">
-                          <span className="font-bold text-lg">Send Quantity</span>
-                          <input 
-                            type="text" 
-                            readOnly 
-                            placeholder="0" 
-                            value={transferQty}
-                            className="text-right text-2xl font-bold bg-transparent border-none outline-none max-w-[150px] p-0 text-cyan-400"
-                          />
+                    {/* Inline Keyboard Quantity Selector for Search Result */}
+                    {selectedSearchProduct && (
+                      <div className="glass-panel space-y-4 border border-cyan-500/30">
+                        <div className="flex items-center justify-between border-b border-glass pb-2">
+                          <div className="text-xs">
+                            <span className="text-cyan-400 font-semibold block">Select Quantity</span>
+                            <span className="text-gray-400">{selectedSearchProduct.brand} {selectedSearchProduct.model}</span>
+                          </div>
+                          <button onClick={() => setSelectedSearchProduct(null)} className="text-gray-400 hover:text-white text-xs">Cancel</button>
                         </div>
 
-                        <div className="keypad-grid">
+                        <div className="flex items-center justify-between bg-black/20 p-3 rounded-lg border border-glass">
+                          <span className="text-xs text-gray-400">Transfer Count:</span>
+                          <span className="text-xl font-bold text-cyan-400">{searchQtyInput || '0'}</span>
+                        </div>
+
+                        <div className="keypad-grid-small">
                           {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫'].map(btn => (
                             <button 
                               key={btn} 
-                              onClick={() => handleKeypadPress(btn, transferQty, setTransferQty)}
-                              className={`keypad-btn ${['C','⌫'].includes(btn) ? 'keypad-btn-action' : ''}`}
+                              onClick={() => handleKeypadPress(btn, searchQtyInput, setSearchQtyInput)}
+                              className={`keypad-btn-sm ${['C','⌫'].includes(btn) ? 'keypad-btn-action-sm' : ''}`}
                             >
                               {btn}
                             </button>
@@ -3646,18 +3946,277 @@ export default function App() {
                         </div>
 
                         <button 
-                          onClick={handleSendTransfer}
-                          disabled={sendingTransfer || !transferQty}
-                          className="w-full btn-primary mt-4 py-4 bg-gradient-to-r from-cyan-600 to-cyan-500 shadow-cyan-500/10"
+                          onClick={() => {
+                            const qty = parseInt(searchQtyInput);
+                            if (qty > 0) addToCartFromSearch(selectedSearchProduct, qty);
+                          }}
+                          disabled={!searchQtyInput || parseInt(searchQtyInput) <= 0}
+                          className="w-full btn-primary py-2.5 text-sm"
                         >
-                          {sendingTransfer ? <RotateCw className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-                          Ship Transfer In Transit
+                          Add to Transfer Cart
                         </button>
                       </div>
                     )}
                   </div>
                 )}
-              </>
+
+                {/* Option B: Snap Sticker camera input */}
+                {activeTransferOption === 'sticker' && (
+                  <div className="space-y-4">
+                    {!transferPhoto ? (
+                      <div 
+                        onClick={() => transferFileRef.current?.click()}
+                        className="border-2 border-dashed border-glass rounded-2xl flex flex-col items-center justify-center p-8 cursor-pointer hover:border-cyan-500/40 transition-all min-h-[140px]"
+                      >
+                        <Camera className="w-10 h-10 text-gray-500 mb-2" />
+                        <span className="font-semibold text-sm text-gray-300">Snap Transfer Sticker</span>
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          capture="environment" 
+                          ref={transferFileRef}
+                          onChange={e => handleFileChange(e, processTransferSticker)}
+                          className="hidden" 
+                        />
+                      </div>
+                    ) : (
+                      <div className="relative rounded-xl overflow-hidden border border-glass max-h-[100px] flex items-center justify-center bg-black/40">
+                        {extracting ? (
+                          <div className="flex items-center gap-3 py-6">
+                            <RotateCw className="w-5 h-5 text-cyan-400 animate-spin" />
+                            <span className="text-xs font-semibold text-gray-400">AI Sticker Parsing...</span>
+                          </div>
+                        ) : (
+                          <div className="text-xs p-4 text-center text-gray-300">Processing scan result...</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Unified Cart Section */}
+                <div className="flex-1 flex flex-col min-h-[220px]">
+                  <div className="flex items-center justify-between pb-2 border-b border-glass mb-3">
+                    <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Transfer Cart</span>
+                    <span className="text-xs text-cyan-400">{transferCart.length} Unique Products</span>
+                  </div>
+
+                  {transferCart.length === 0 ? (
+                    <div className="flex-1 flex flex-col items-center justify-center border border-dashed border-glass rounded-xl p-8 text-center text-gray-500 text-sm">
+                      <Package className="w-10 h-10 text-gray-600 mb-2" />
+                      No products added to the transfer cart yet. Use Option A or Option B above.
+                    </div>
+                  ) : (
+                    <div className="space-y-3 overflow-y-auto max-h-[280px] pr-1">
+                      {transferCart.map(item => (
+                        <div key={item.sku} className="p-3 bg-white/5 border border-glass rounded-xl flex flex-col gap-2.5">
+                          <div className="flex items-start justify-between">
+                            <div className="text-xs">
+                              <strong className="text-white text-sm block">{item.brand} {item.model}</strong>
+                              <span className="text-gray-400">Size: {item.size} | SKU: {item.sku}</span>
+                            </div>
+                            <button onClick={() => removeCartItem(item.sku)} className="text-rose-400 hover:text-rose-300">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          <div className="flex items-center justify-between border-t border-white/5 pt-2 text-xs">
+                            <div className="space-y-0.5">
+                              <div className="text-gray-500">Source Stock: <strong className="text-white">{item.maxAvailable}</strong></div>
+                              <div className="text-gray-500">Post-Transfer: <strong className="text-cyan-400">{item.maxAvailable - item.quantity}</strong></div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <button 
+                                onClick={() => updateCartItemQty(item.sku, item.quantity - 1)}
+                                className="w-8 h-8 rounded bg-white/5 border border-glass flex items-center justify-center hover:bg-white/10"
+                              >
+                                <Minus className="w-3.5 h-3.5" />
+                              </button>
+                              
+                              <input 
+                                type="number" 
+                                value={item.quantity} 
+                                onChange={e => {
+                                  const val = parseInt(e.target.value);
+                                  if (!isNaN(val)) updateCartItemQty(item.sku, val);
+                                }}
+                                className="w-12 h-8 text-center bg-black/40 border border-glass rounded text-white font-bold p-0 text-xs" 
+                              />
+
+                              <button 
+                                onClick={() => updateCartItemQty(item.sku, item.quantity + 1)}
+                                className="w-8 h-8 rounded bg-white/5 border border-glass flex items-center justify-center hover:bg-white/10"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {transferCart.length > 0 && (
+                    <button 
+                      onClick={() => setActiveTransferStep('review')}
+                      className="w-full btn-primary py-3.5 bg-gradient-to-r from-violet-600 to-cyan-500 mt-4 font-bold"
+                    >
+                      Review & Confirm Transfer ({transferCart.reduce((a, b) => a + b.quantity, 0)} Units)
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* STEP 3: REVIEW & CONFIRM */}
+            {activeTransferStep === 'review' && (
+              <div className="glass-panel space-y-6 max-w-md mx-auto w-full">
+                <div className="text-center pb-2 border-b border-glass">
+                  <h3 className="text-sm font-semibold tracking-wider text-gray-400 uppercase">Review Shipment</h3>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between py-1 border-b border-glass">
+                    <span className="text-gray-400">Source:</span>
+                    <strong className="text-white">{locationName}</strong>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-glass">
+                    <span className="text-gray-400">Destination:</span>
+                    <strong className="text-cyan-400">{locations.find(l => l.id === transferDest)?.name}</strong>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-glass">
+                    <span className="text-gray-400">Shipped By:</span>
+                    <strong className="text-white">{currentUser?.name || 'Technician'}</strong>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-glass">
+                    <span className="text-gray-400">Total Units:</span>
+                    <strong className="text-white text-sm">{transferCart.reduce((a, b) => a + b.quantity, 0)} pcs</strong>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <span className="text-xs font-semibold text-gray-400 block uppercase">Products Shipped</span>
+                  <div className="max-h-[160px] overflow-y-auto space-y-2 p-1.5 bg-black/20 rounded-xl border border-glass">
+                    {transferCart.map(item => (
+                      <div key={item.sku} className="flex justify-between items-center text-xs py-1 border-b border-white/5 last:border-0">
+                        <div>
+                          <strong className="text-white">{item.brand} {item.model}</strong>
+                          <span className="text-gray-400 block text-[10px]">{item.sku} ({item.entryMethod})</span>
+                        </div>
+                        <span className="font-bold text-white bg-white/10 px-2 py-0.5 rounded">{item.quantity} pcs</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Transfer Notes (Optional)</label>
+                  <textarea 
+                    value={transferNotes}
+                    onChange={e => setTransferNotes(e.target.value)}
+                    placeholder="Enter any vehicle details, shortages, or special handling notes here..."
+                    className="w-full h-20 text-xs p-3 bg-black/40 border border-glass rounded-xl text-white outline-none focus:border-cyan-500/50"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 mt-4">
+                  <button 
+                    onClick={() => setActiveTransferStep('cart')}
+                    className="btn-secondary py-3 text-xs"
+                  >
+                    Back to Cart
+                  </button>
+                  <button 
+                    onClick={submitRedesignedTransferBatch}
+                    disabled={sendingTransfer}
+                    className="btn-primary py-3 text-xs bg-gradient-to-r from-cyan-600 to-cyan-500"
+                  >
+                    {sendingTransfer ? <RotateCw className="w-4.5 h-4.5 animate-spin" /> : <Send className="w-4.5 h-4.5" />}
+                    Confirm Transfer
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* STEP 4: RECEIPT */}
+            {activeTransferStep === 'receipt' && transferReceipt && (
+              <div className="glass-panel space-y-6 max-w-md mx-auto w-full border border-cyan-500/20 shadow-cyan-500/5">
+                <div className="text-center pb-3 border-b border-glass">
+                  <div className="inline-flex items-center justify-center p-2.5 bg-cyan-500/10 rounded-full mb-2.5 border border-cyan-500/20">
+                    <Check className="w-7 h-7 text-cyan-400" />
+                  </div>
+                  <h3 className="text-lg font-bold text-white">Transfer Shipped</h3>
+                  <p className="text-xs text-gray-400 mt-1">Transaction Ref: <strong className="text-cyan-400">{transferReceipt.transferNumber}</strong></p>
+                </div>
+
+                <div className="space-y-2 text-xs border-b border-glass pb-4">
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Date & Time:</span>
+                    <span className="text-white">{transferReceipt.dateTime}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Source Store:</span>
+                    <span className="text-white">{transferReceipt.source}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Destination:</span>
+                    <span className="text-cyan-400 font-semibold">{transferReceipt.destination}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Employee:</span>
+                    <span className="text-white">{transferReceipt.employee}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Total Units:</span>
+                    <span className="text-white font-bold">{transferReceipt.totalUnits} pcs</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <span className="text-xs font-semibold text-gray-400 block uppercase">Shipped Items</span>
+                  <div className="space-y-2 bg-black/20 p-2.5 rounded-xl border border-glass">
+                    {transferReceipt.products.map((item: any) => (
+                      <div key={item.sku} className="flex justify-between text-xs py-1 border-b border-white/5 last:border-0">
+                        <div>
+                          <strong className="text-white">{item.brand} {item.model}</strong>
+                          <span className="text-gray-400 block text-[10px]">{item.sku}</span>
+                        </div>
+                        <span className="text-white font-bold">{item.quantity} pcs</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {transferReceipt.notes && (
+                  <div className="text-xs p-3 bg-black/40 border border-glass rounded-xl">
+                    <span className="text-gray-500 block mb-1">Receipt Notes:</span>
+                    <span className="text-gray-300 italic">{transferReceipt.notes}</span>
+                  </div>
+                )}
+
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => window.print()}
+                    className="w-1/2 btn-secondary py-3 text-xs flex items-center justify-center gap-2"
+                  >
+                    <Printer className="w-4 h-4" />
+                    Print Sheet
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setTransferDest('');
+                      setTransferCart([]);
+                      setTransferReceipt(null);
+                      setActiveTransferStep('setup');
+                      setActiveTab('dashboard');
+                    }}
+                    className="w-1/2 btn-primary py-3 text-xs"
+                  >
+                    Done & Exit
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         )}
@@ -5399,6 +5958,24 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {activeTab === 'global-transfers' && isSuperAdminUser && (
+        <GlobalTransferDashboard 
+          currentUser={currentUser}
+          locations={locations}
+          onBack={() => setActiveTab('dashboard')}
+          showTemporaryMessage={showTemporaryMessage}
+        />
+      )}
+
+      {activeTab === 'submit-warranty' && (
+        <SubmitWarrantyForm 
+          currentUser={currentUser}
+          activeLocation={activeLocation}
+          onBack={() => setActiveTab('dashboard')}
+          showTemporaryMessage={showTemporaryMessage}
+        />
       )}
 
       {/* Premium Enterprise Footer (Anchored to the absolute bottom of the layout) */}

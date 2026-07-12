@@ -5,50 +5,75 @@ const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
 const supabaseServiceKey = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || '';
 const supabase = (supabaseUrl && supabaseServiceKey) ? createClient(supabaseUrl, supabaseServiceKey) : null;
 
-// Helper to update stock level server-side
-async function serverUpdateStockLevel(supabaseClient, sku, type, locationId, diff) {
+// Authoritative Inventory Write Path (H3-BLOCK / Point 4)
+async function serverUpdateStockLevel(supabaseClient, sku, type, locationId, diff, productId) {
   const activeLocalLocations = ['moncton', 'oromocto', 'saint-john', 'fredericton', 'otown'];
   if (!locationId || !activeLocalLocations.includes(locationId)) {
-    console.log(`ℹ️ [API] Skipping stock update for non-local or empty location: ${locationId}`);
+    console.log(`ℹ️ [API] Skipping stock update for non-local location: ${locationId}`);
     return null;
   }
 
-  const table = type === 'tire' ? 'tires_catalog' : 'wheels_catalog';
+  // Resolve product ID if not provided
+  if (!productId) {
+    const { data: master } = await supabaseClient
+      .from('product_master')
+      .select('id')
+      .eq('master_sku', sku)
+      .maybeSingle();
+    if (master) productId = master.id;
+  }
 
-  const { data, error } = await supabaseClient
-    .from(table)
-    .select('location_counts, stock')
-    .eq('sku', sku)
+  if (!productId) {
+    throw new Error(`Master product for SKU ${sku} not found.`);
+  }
+
+  // 1. Fetch current status & quantity from product_location_inventory
+  const { data: pliRow, error: pliErr } = await supabaseClient
+    .from('product_location_inventory')
+    .select('quantity, inventory_status')
+    .eq('product_id', productId)
+    .eq('location_id', locationId)
     .maybeSingle();
 
-  if (error) {
-    throw new Error(`Could not read stock for ${sku}: ${error.message}`);
-  }
-  if (!data) {
-    throw new Error(`SKU ${sku} not found in catalog — stock was not updated.`);
+  if (pliErr) throw pliErr;
+
+  const currentQty = pliRow ? pliRow.quantity : null;
+  const currentStatus = pliRow ? pliRow.inventory_status : 'pending';
+
+  let newQty;
+  let newStatus = currentStatus;
+
+  // Initialize stock for pending branches upon transaction
+  if (currentStatus === 'pending' || currentStatus === 'not-counted') {
+    newQty = Math.max(0, diff);
+    newStatus = 'complete';
+  } else {
+    newQty = Math.max(0, (currentQty || 0) + diff);
+    newStatus = 'complete';
   }
 
-  const currentCounts = data.location_counts || {};
-  const newLocCount = Math.max(0, (currentCounts[locationId] || 0) + diff);
-  const newCounts = {
-    ...currentCounts,
-    [locationId]: newLocCount,
-  };
-  const newTotal = Object.values(newCounts).reduce((a, b) => a + (parseInt(String(b), 10) || 0), 0);
+  // 2. Upsert authoritative product_location_inventory
+  const { error: upsertErr } = await supabaseClient
+    .from('product_location_inventory')
+    .upsert({
+      product_id: productId,
+      location_id: locationId,
+      quantity: newQty,
+      inventory_status: newStatus,
+      last_counted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }, {
+      onConflict: 'product_id,location_id'
+    });
 
-  const { error: updateError } = await supabaseClient
-    .from(table)
-    .update({
-      location_counts: newCounts,
-      stock: newTotal,
-    })
-    .eq('sku', sku);
-
-  if (updateError) {
-    throw new Error(`Could not update stock for ${sku}: ${updateError.message}`);
+  if (upsertErr) {
+    throw new Error(`Failed to update authoritative PLI: ${upsertErr.message}`);
   }
-  
-  return { newCounts, newTotal };
+
+  // 3. Recalculate Master Total Stock (database trigger will sync legacy mirror automatically)
+  await supabaseClient.rpc('recalculate_master_stock', { p_product_id: productId });
+
+  return { newTotal: newQty };
 }
 
 export default async function handler(req, res) {
@@ -72,12 +97,70 @@ export default async function handler(req, res) {
 
   if (!supabase) {
     console.error('❌ Supabase credentials missing in serverless environment variables!');
-    return res.status(500).json({ error: 'Database configuration error. Please check your Vercel Environment Variables.' });
+    return res.status(500).json({ error: 'Database configuration error.' });
   }
 
-  if (!requireStaffAuth(req, res)) return;
+  const session = requireStaffAuth(req, res);
+  if (!session) return;
 
-  const { transactionId, receivedQuantity, verifiedBy } = req.body;
+  const body = req.body || {};
+  const action = body.action || 'verify_legacy';
+
+  // --- ACTION: RECEIVE BATCH RECEIPT ---
+  if (action === 'receive_receipt') {
+    if (session.role !== 'SUPER_ADMIN' && session.role !== 'MANAGER') {
+      return res.status(403).json({ error: 'Insufficient permissions. Manager role required.' });
+    }
+    const { receiptIdempotencyKey, transferBatchId, destinationLocation, receivedBy, notes, items } = body;
+    if (!receiptIdempotencyKey || !transferBatchId || !destinationLocation || !receivedBy || !items || !Array.isArray(items)) {
+      return res.status(400).json({ error: 'Missing required parameters for receive_receipt action.' });
+    }
+
+    try {
+      const { data, error } = await supabase.rpc('receive_transfer_receipt', {
+        p_receipt_idempotency_key: receiptIdempotencyKey,
+        p_transfer_batch_id: transferBatchId,
+        p_destination_location: destinationLocation,
+        p_received_by: receivedBy,
+        p_notes: notes || '',
+        p_items: items
+      });
+
+      if (error) throw error;
+      return res.status(200).json(data);
+    } catch (error) {
+      console.error('❌ [API Serverless] Receive transfer receipt failed:', error.message);
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // --- ACTION: CANCEL BATCH ---
+  if (action === 'cancel_batch') {
+    if (session.role !== 'SUPER_ADMIN' && session.role !== 'MANAGER') {
+      return res.status(403).json({ error: 'Insufficient permissions. Manager role required.' });
+    }
+    const { transferBatchId, cancelledBy, reason } = body;
+    if (!transferBatchId || !cancelledBy || !reason) {
+      return res.status(400).json({ error: 'Missing required parameters for cancel_batch action.' });
+    }
+
+    try {
+      const { data, error } = await supabase.rpc('cancel_transfer_batch', {
+        p_transfer_batch_id: transferBatchId,
+        p_cancelled_by: cancelledBy,
+        p_reason: reason
+      });
+
+      if (error) throw error;
+      return res.status(200).json(data);
+    } catch (error) {
+      console.error('❌ [API Serverless] Cancel transfer batch failed:', error.message);
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // --- ACTION: LEGACY VERIFY SINGLE ITEM ---
+  const { transactionId, receivedQuantity, verifiedBy } = body;
   if (!transactionId || typeof receivedQuantity !== 'number' || receivedQuantity < 0 || !verifiedBy) {
     return res.status(400).json({ error: 'Missing or invalid parameters (transactionId, receivedQuantity, verifiedBy)' });
   }
@@ -98,21 +181,26 @@ export default async function handler(req, res) {
     }
 
     // 2. Update transaction status
+    const updatePayload = {
+      status: 'completed',
+      received_quantity: receivedQuantity,
+      verified_at: new Date().toISOString(),
+      verified_by: verifiedBy
+    };
+    if (body.notes) {
+      updatePayload.notes = tx.notes ? `${tx.notes} | Recv Notes: ${body.notes}` : body.notes;
+    }
+
     const { error: updateErr } = await supabase
       .from('inventory_transactions')
-      .update({
-        status: 'completed',
-        received_quantity: receivedQuantity,
-        verified_at: new Date().toISOString(),
-        verified_by: verifiedBy
-      })
+      .update(updatePayload)
       .eq('id', transactionId);
 
     if (updateErr) throw updateErr;
 
     // 3. Add stock to target location (verifiedBy should match to_location)
     const targetLoc = tx.to_location || verifiedBy;
-    const stockUpdateResult = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, targetLoc, receivedQuantity);
+    const stockUpdateResult = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, targetLoc, receivedQuantity, tx.product_id);
 
     return res.status(200).json({ 
       success: true, 
