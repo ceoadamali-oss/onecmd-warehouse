@@ -7,15 +7,13 @@ if (!supabaseUrl || !supabaseAnonKey) {
   console.warn('⚠️ Supabase credentials missing in environment variables.');
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  global: {
-    get headers() {
-      const token = sessionStorage.getItem('onecmd_staff_token');
-      const headers: Record<string, string> = {};
-      if (token) {
-        headers.Authorization = `Bearer ${token}`;
-      }
-      return headers;
-    }
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+try {
+  const token = typeof window !== 'undefined' ? sessionStorage.getItem('onecmd_staff_token') : null;
+  if (token) {
+    supabase.auth.setSession({ access_token: token, refresh_token: '' }).catch(() => {});
   }
-});
+} catch (e) {
+  console.warn('Session initialization skipped:', e);
+}

@@ -1,3 +1,5 @@
+import { supabase } from './supabaseClient';
+
 const TOKEN_KEY = 'onecmd_staff_token';
 
 export function getStaffToken(): string | null {
@@ -10,10 +12,14 @@ export function getStaffToken(): string | null {
 
 export function setStaffToken(token: string): void {
   sessionStorage.setItem(TOKEN_KEY, token);
+  if (token) {
+    supabase.auth.setSession({ access_token: token, refresh_token: '' }).catch(() => {});
+  }
 }
 
 export function clearStaffToken(): void {
   sessionStorage.removeItem(TOKEN_KEY);
+  supabase.auth.signOut().catch(() => {});
 }
 
 export function authHeaders(extra?: Record<string, string>): Record<string, string> {
