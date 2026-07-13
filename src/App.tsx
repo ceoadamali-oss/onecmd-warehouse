@@ -1730,25 +1730,17 @@ export default function App() {
     }
     setSearchingTransferProducts(true);
     try {
-      const cleanQuery = query.trim();
-      let orFilter = `master_sku.ilike.%${cleanQuery}%,brand.ilike.%${cleanQuery}%,model.ilike.%${cleanQuery}%,size.ilike.%${cleanQuery}%`;
-      
-      const sizeParts = cleanQuery.match(/\d+/g);
-      if (sizeParts && sizeParts.length >= 2) {
-        const sizeWildcard = sizeParts.join('%');
-        orFilter += `,size.ilike.%${sizeWildcard}%`;
+      const res = await fetch(`/api/search?query=${encodeURIComponent(query.trim())}`, {
+        headers: authHeaders()
+      });
+      if (!res.ok) {
+        throw new Error(`API returned status ${res.status}`);
       }
-
-      const { data, error } = await supabase
-        .from('product_master')
-        .select('*, product_location_inventory(*)')
-        .or(orFilter)
-        .limit(40);
-
-      if (error) throw error;
+      const data = await res.json();
       setTransferSearchResults(data || []);
     } catch (err: any) {
       console.error('Search failed:', err.message);
+      showTemporaryMessage('error', `Search failed: ${err.message}`);
     } finally {
       setSearchingTransferProducts(false);
     }
