@@ -40,7 +40,7 @@ export function ReconcileDashboard({ onBack, showTemporaryMessage }: ReconcileDa
   const fetchReconciliationData = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/live-reconciliation', {
+      const res = await fetch('/api/catalog-queries?action=reconcile', {
         headers: authHeaders()
       });
       if (!res.ok) {

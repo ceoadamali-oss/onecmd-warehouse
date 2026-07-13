@@ -354,7 +354,7 @@ export default function App() {
       const fresh = data?.location_counts || { technicians: [], timecards: [], schedules: [] };
       const updatedConfig = typeof updater === 'function' ? updater(fresh) : updater;
 
-      const res = await fetch('/api/register-staff', {
+      const res = await fetch('/api/staff', {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ action: 'saveConfig', config: updatedConfig }),
@@ -377,7 +377,7 @@ export default function App() {
     patch: Record<string, unknown>
   ): Promise<boolean> => {
     try {
-      const response = await fetch('/api/register-staff', {
+      const response = await fetch('/api/staff', {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ action: 'updateStaff', technicianId, ...patch }),
@@ -868,10 +868,11 @@ export default function App() {
       const onPremises = await verifyPremisesAccess();
       if (!onPremises) return;
       try {
-        const res = await fetch('/api/staff-auth', {
+        const res = await fetch('/api/staff', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            action: 'auth',
             mode: 'admin',
             password: credential,
             locationId: activeLocation,
@@ -909,10 +910,11 @@ export default function App() {
       }
     } else {
       try {
-        const res = await fetch('/api/staff-auth', {
+        const res = await fetch('/api/staff', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            action: 'auth',
             mode: 'technician',
             pin: credential,
             locationId: activeLocation,
@@ -1730,7 +1732,7 @@ export default function App() {
     }
     setSearchingTransferProducts(true);
     try {
-      const res = await fetch(`/api/search?query=${encodeURIComponent(query.trim())}`, {
+      const res = await fetch(`/api/catalog-queries?action=search&query=${encodeURIComponent(query.trim())}`, {
         headers: authHeaders()
       });
       if (!res.ok) {
@@ -5695,7 +5697,7 @@ export default function App() {
                   setCreatingTech(true);
                   setInviteSentMsg('');
                   try {
-                    const regResponse = await fetch('/api/register-staff', {
+                    const regResponse = await fetch('/api/staff', {
                       method: 'POST',
                       headers: authHeaders(),
                       body: JSON.stringify({
