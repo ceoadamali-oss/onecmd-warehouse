@@ -318,7 +318,7 @@ export const GlobalTransferDashboard: React.FC<GlobalTransferDashboardProps> = (
       const overstockSkus: string[] = [];
 
       productsInventory.forEach(pm => {
-        const pli = pm.product_location_inventory?.find((l: any) => l.location_id === loc.location_id);
+        const pli = pm.product_location_inventory?.find((l: any) => l.location_id === (loc.location_id || loc.id));
         const qty = pli?.quantity || 0;
         totalLocQty += qty;
 
@@ -328,11 +328,12 @@ export const GlobalTransferDashboard: React.FC<GlobalTransferDashboardProps> = (
         }
       });
 
+      const locName = loc.location_name || loc.name || '';
       if (lowStockSkus.length > 2) {
-        list.push(`⚠️ ${loc.location_name.toUpperCase()} has critical understock on key items (${lowStockSkus.slice(0, 2).join(', ')}). Recommend replenishment.`);
+        list.push(`⚠️ ${locName.toUpperCase()} has critical understock on key items (${lowStockSkus.slice(0, 2).join(', ')}). Recommend replenishment.`);
       }
       if (overstockSkus.length > 0) {
-        list.push(`📈 ${loc.location_name.toUpperCase()} is carrying excessive inventory for ${overstockSkus[0]}. Consider dynamic relocation before ordering more.`);
+        list.push(`📈 ${locName.toUpperCase()} is carrying excessive inventory for ${overstockSkus[0]}. Consider dynamic relocation before ordering more.`);
       }
     });
 
@@ -513,7 +514,7 @@ export const GlobalTransferDashboard: React.FC<GlobalTransferDashboardProps> = (
                 className="bg-slate-900 border border-slate-700 text-white rounded-lg px-2.5 py-1.5"
               >
                 <option value="all">Source: All</option>
-                {locations.map(l => <option key={l.location_id} value={l.location_id}>{l.location_name}</option>)}
+                {locations.map(l => <option key={l.location_id || l.id} value={l.location_id || l.id}>{l.location_name || l.name}</option>)}
               </select>
 
               <select 
@@ -522,7 +523,7 @@ export const GlobalTransferDashboard: React.FC<GlobalTransferDashboardProps> = (
                 className="bg-slate-900 border border-slate-700 text-white rounded-lg px-2.5 py-1.5"
               >
                 <option value="all">Destination: All</option>
-                {locations.map(l => <option key={l.location_id} value={l.location_id}>{l.location_name}</option>)}
+                {locations.map(l => <option key={l.location_id || l.id} value={l.location_id || l.id}>{l.location_name || l.name}</option>)}
               </select>
 
               <select 
@@ -758,7 +759,7 @@ export const GlobalTransferDashboard: React.FC<GlobalTransferDashboardProps> = (
                     <th className="p-3">Product Detail</th>
                     <th className="p-3 text-center">Company Total</th>
                     {locations.map(loc => (
-                      <th key={loc.location_id} className="p-3 text-center capitalize">{loc.location_name}</th>
+                      <th key={loc.location_id || loc.id} className="p-3 text-center capitalize">{loc.location_name || loc.name}</th>
                     ))}
                   </tr>
                 </thead>
@@ -771,11 +772,11 @@ export const GlobalTransferDashboard: React.FC<GlobalTransferDashboardProps> = (
                       </td>
                       <td className="p-3 text-center font-bold text-cyan-400">{pm.stock}</td>
                       {locations.map(loc => {
-                        const pli = pm.product_location_inventory?.find((l: any) => l.location_id === loc.location_id);
+                        const pli = pm.product_location_inventory?.find((l: any) => l.location_id === (loc.location_id || loc.id));
                         const qty = pli ? pli.quantity : null;
                         const inTransit = pli ? pli.in_transit_quantity : 0;
                         return (
-                          <td key={loc.location_id} className="p-3 text-center">
+                          <td key={loc.location_id || loc.id} className="p-3 text-center">
                             {qty === null ? (
                               <span className="text-gray-500 italic">Pending</span>
                             ) : (
