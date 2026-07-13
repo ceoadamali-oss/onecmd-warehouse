@@ -308,6 +308,23 @@ export default async function handler(req, res) {
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
+  // --- ACTION 3: PENDING TRANSFERS ---
+  if (action === 'pending-transfers') {
+    const { locationId } = req.query || {};
+    if (!locationId) {
+      return res.status(400).json({ error: 'locationId is required' });
+    }
+    try {
+      const { data, error } = await supabase
+        .from('inventory_transactions')
+        .select('*')
+        .eq('to_location', locationId)
+        .eq('status', 'pending');
+      if (error) throw error;
+      return res.status(200).json(data || []);
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
   }
 
   return res.status(400).json({ error: 'Invalid or missing action parameter' });

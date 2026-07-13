@@ -632,12 +632,13 @@ export default function App() {
     if (!activeLocation) return;
     try {
       if (isOnline) {
-        const { data, error } = await supabase
-          .from('inventory_transactions')
-          .select('*')
-          .eq('to_location', activeLocation)
-          .eq('status', 'pending');
-        if (error) throw error;
+        const res = await fetch(`/api/catalog-queries?action=pending-transfers&locationId=${activeLocation}`, {
+          headers: authHeaders()
+        });
+        if (!res.ok) {
+          throw new Error(`API returned status ${res.status}`);
+        }
+        const data = await res.json();
         setPendingTransfers(data || []);
       } else {
         // Fallback for offline: filter local transactions
