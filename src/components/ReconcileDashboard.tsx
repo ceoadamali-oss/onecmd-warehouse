@@ -8,7 +8,7 @@ import {
   ShoppingCart, 
   BarChart3 
 } from 'lucide-react';
-import { authHeaders } from '../staffAuth';
+import { authHeadersGet } from '../staffAuth';
 
 interface ReconcileDashboardProps {
   onBack: () => void;
@@ -41,7 +41,7 @@ export function ReconcileDashboard({ onBack, showTemporaryMessage }: ReconcileDa
     setLoading(true);
     try {
       const res = await fetch('/api/catalog-queries?action=reconcile', {
-        headers: authHeaders()
+        headers: authHeadersGet()
       });
       if (!res.ok) {
         throw new Error(`API returned ${res.status}`);

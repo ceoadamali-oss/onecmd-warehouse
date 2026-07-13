@@ -31,3 +31,12 @@ export function authHeaders(extra?: Record<string, string>): Record<string, stri
   if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
 }
+
+export function authHeadersGet(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = {
+    ...extra,
+  };
+  const token = getStaffToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}

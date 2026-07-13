@@ -48,7 +48,7 @@ import { PremisesLockOverlay } from './components/PremisesLockOverlay';
 import { ProductPhotoStudio } from './components/ProductPhotoStudio';
 import { BuildGalleryStudio } from './components/BuildGalleryStudio';
 import { GEOFENCE_RADIUS_KM, STORE_LOCATIONS, getPremisesStatus, isCatalogImageMissing } from './lib/storeLocations';
-import { authHeaders, clearStaffToken, setStaffToken } from './staffAuth';
+import { authHeaders, authHeadersGet, clearStaffToken, setStaffToken } from './staffAuth';
 
 type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs' | 'timecard' | 'workforce' | 'schedule' | 'payroll' | 'permissions' | 'product-photos' | 'build-gallery' | 'global-transfers' | 'submit-warranty' | 'reconcile';
 
@@ -633,7 +633,7 @@ export default function App() {
     try {
       if (isOnline) {
         const res = await fetch(`/api/catalog-queries?action=pending-transfers&locationId=${activeLocation}`, {
-          headers: authHeaders()
+          headers: authHeadersGet()
         });
         if (!res.ok) {
           throw new Error(`API returned status ${res.status}`);
@@ -1734,7 +1734,7 @@ export default function App() {
     setSearchingTransferProducts(true);
     try {
       const res = await fetch(`/api/catalog-queries?action=search&query=${encodeURIComponent(query.trim())}`, {
-        headers: authHeaders()
+        headers: authHeadersGet()
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
