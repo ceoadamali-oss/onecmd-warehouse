@@ -1736,7 +1736,8 @@ export default function App() {
         headers: authHeaders()
       });
       if (!res.ok) {
-        throw new Error(`API returned status ${res.status}`);
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `API returned status ${res.status}`);
       }
       const data = await res.json();
       setTransferSearchResults(data || []);
