@@ -39,16 +39,18 @@ import type { TireStickerData } from './openaiClient';
 import { offlineStorage } from './offlineStorage';
 import { GlobalTransferDashboard } from './components/GlobalTransferDashboard';
 import { SubmitWarrantyForm } from './components/SubmitWarrantyForm';
+import { ReconcileDashboard } from './components/ReconcileDashboard';
 import type { PendingTransaction } from './offlineStorage';
 import { ScanViewfinder } from './components/ScanViewfinder';
 import { WinterApprovedToggle } from './components/WinterApprovedToggle';
+import { PreStuddedToggle } from './components/PreStuddedToggle';
 import { PremisesLockOverlay } from './components/PremisesLockOverlay';
 import { ProductPhotoStudio } from './components/ProductPhotoStudio';
 import { BuildGalleryStudio } from './components/BuildGalleryStudio';
 import { GEOFENCE_RADIUS_KM, STORE_LOCATIONS, getPremisesStatus, isCatalogImageMissing } from './lib/storeLocations';
 import { authHeaders, clearStaffToken, setStaffToken } from './staffAuth';
 
-type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs' | 'timecard' | 'workforce' | 'schedule' | 'payroll' | 'permissions' | 'product-photos' | 'build-gallery' | 'global-transfers' | 'submit-warranty';
+type ActiveTab = 'dashboard' | 'receive' | 'transfer' | 'verify' | 'estimate' | 'audit' | 'orders' | 'logs' | 'timecard' | 'workforce' | 'schedule' | 'payroll' | 'permissions' | 'product-photos' | 'build-gallery' | 'global-transfers' | 'submit-warranty' | 'reconcile';
 
 type AppUser = {
   role: 'worker' | 'manager';
@@ -188,6 +190,7 @@ export default function App() {
   const [skuExists, setSkuExists] = useState<boolean | null>(null);
   const [winterApproved, setWinterApproved] = useState<boolean>(false);
   const [winterApprovedAiDetected, setWinterApprovedAiDetected] = useState<boolean>(false);
+  const [preStudded, setPreStudded] = useState<boolean>(false);
   const [receiveScanError, setReceiveScanError] = useState<string>('');
   const [undoingIntake, setUndoingIntake] = useState<boolean>(false);
   const [scanMode, setScanMode] = useState<'sticker' | 'sidewall' | 'bulk'>('sticker');
@@ -1271,7 +1274,10 @@ export default function App() {
     }
     setSavingReceive(true);
     try {
-      const generatedSku = formatSku(extractedSpecs.brand, extractedSpecs.size, extractedSpecs.model || '');
+      let generatedSku = formatSku(extractedSpecs.brand, extractedSpecs.size, extractedSpecs.model || '');
+      if (preStudded) {
+        generatedSku += '-STUDDED';
+      }
       const isWheel = extractedSpecs.product_type === 'wheel';
 
       // Build metadata notes for managers to view secondary specs (UTQG, Ply, DOT, PCD, Offset, etc.)
@@ -1332,6 +1338,7 @@ export default function App() {
           ply_rating: extractedSpecs.ply_rating,
           season: extractedSpecs.season,
           winterApproved: winterApproved,
+          preStudded: preStudded,
           productPhoto: productPhoto || undefined // base64 string
         };
         await syncTransactionWithServer(txData, newProductPayload);
@@ -1350,6 +1357,7 @@ export default function App() {
       setSkuExists(null);
       setWinterApproved(false);
       setWinterApprovedAiDetected(false);
+      setPreStudded(false);
       setReceiveScanError('');
     } catch (e: any) {
       showTemporaryMessage('error', `Failed to save received stock: ${e.message}`);
@@ -1722,11 +1730,20 @@ export default function App() {
     }
     setSearchingTransferProducts(true);
     try {
+      const cleanQuery = query.trim();
+      let orFilter = `master_sku.ilike.%${cleanQuery}%,brand.ilike.%${cleanQuery}%,model.ilike.%${cleanQuery}%,size.ilike.%${cleanQuery}%`;
+      
+      const sizeParts = cleanQuery.match(/\d+/g);
+      if (sizeParts && sizeParts.length >= 2) {
+        const sizeWildcard = sizeParts.join('%');
+        orFilter += `,size.ilike.%${sizeWildcard}%`;
+      }
+
       const { data, error } = await supabase
         .from('product_master')
         .select('*, product_location_inventory(*)')
-        .or(`master_sku.ilike.%${query}%,brand.ilike.%${query}%,model.ilike.%${query}%,size.ilike.%${query}%`)
-        .limit(20);
+        .or(orFilter)
+        .limit(40);
 
       if (error) throw error;
       setTransferSearchResults(data || []);
@@ -2509,6 +2526,24 @@ export default function App() {
                     <span className="badge badge-blue text-xs font-semibold">Global Control</span>
                   </button>
 
+                  {/* Live Inventory Reconciliation Dashboard (Rose/Red) */}
+                  <button 
+                    type="button"
+                    onClick={() => setActiveTab('reconcile')}
+                    className="w-full glass-panel glass-panel-interactive flex items-center justify-between p-4 border-l-4 border-l-rose-500"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-rose-500/10 flex items-center justify-center border border-rose-500/20 text-rose-400">
+                        <BarChart3 className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="action-card__title">📊 Live Stock Reconciliation</span>
+                        <span className="action-card__sub">Audit scanned baselines against live Square sales deductions</span>
+                      </div>
+                    </div>
+                    <span className="badge badge-rose text-xs font-semibold">Live Audit</span>
+                  </button>
+
                   {/* Submit Warranty Claim (Amber) */}
                   <button 
                     type="button"
@@ -3177,6 +3212,11 @@ export default function App() {
                           enabled={winterApproved}
                           onChange={setWinterApproved}
                           aiDetected={winterApprovedAiDetected}
+                        />
+
+                        <PreStuddedToggle
+                          enabled={preStudded}
+                          onChange={setPreStudded}
                         />
                         </div>
                       </div>
@@ -5973,6 +6013,13 @@ export default function App() {
         <SubmitWarrantyForm 
           currentUser={currentUser}
           activeLocation={activeLocation}
+          onBack={() => setActiveTab('dashboard')}
+          showTemporaryMessage={showTemporaryMessage}
+        />
+      )}
+
+      {activeTab === 'reconcile' && (
+        <ReconcileDashboard 
           onBack={() => setActiveTab('dashboard')}
           showTemporaryMessage={showTemporaryMessage}
         />

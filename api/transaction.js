@@ -176,6 +176,28 @@ export default async function handler(req, res) {
       }
 
       if (!productId) {
+        let basePrice = isWheel ? 180 : 120;
+        if (!isWheel && newProduct) {
+          try {
+            const { data: sameSizeTires } = await supabase
+              .from('product_master')
+              .select('price')
+              .eq('size', sizeValue)
+              .eq('product_type', 'tire')
+              .not('price', 'is', null);
+            if (sameSizeTires && sameSizeTires.length > 0) {
+              const sum = sameSizeTires.reduce((acc, curr) => acc + (Number(curr.price) || 0), 0);
+              basePrice = Math.round((sum / sameSizeTires.length) * 100) / 100;
+            }
+          } catch (e) {
+            console.warn('Failed to calculate average price for size:', sizeValue);
+          }
+        }
+
+        if (!isWheel && newProduct && newProduct.preStudded) {
+          basePrice += 25.00;
+        }
+
         const { data: newPM, error: pmErr } = await supabase
           .from('product_master')
           .insert({
@@ -184,7 +206,7 @@ export default async function handler(req, res) {
             brand: brandName,
             model: newProduct ? newProduct.model : 'Generic Product',
             size: sizeValue,
-            price: isWheel ? 180 : 120,
+            price: basePrice,
             stock: 0,
             winter_approved: winterApprovedVal,
             specifications: newProduct ? { ...newProduct } : {},
