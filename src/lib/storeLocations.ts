@@ -4,7 +4,7 @@ export const GEOFENCE_RADIUS_KM = 0.3;
 export const STORE_LOCATIONS = [
   { id: 'moncton', name: 'Tire King Moncton', lat: 46.1389, lng: -64.8488 },
   { id: 'oromocto', name: 'Tire King Oromocto', lat: 45.8398, lng: -66.4767 },
-  { id: 'fredericton', name: 'Tire King Fredericton', lat: 45.9389, lng: -66.6656 },
+  { id: 'fredericton', name: 'Fredericton Tire Outlet', lat: 45.9389, lng: -66.6656 },
   { id: 'saint-john', name: 'Tire King Saint John', lat: 45.2889, lng: -66.0547 },
   { id: 'otown', name: "O'Town Auto and Tire", lat: 45.8418, lng: -66.5007 },
 ] as const;

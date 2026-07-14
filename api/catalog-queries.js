@@ -10,7 +10,7 @@ const STORES = {
   'L72FDHCQVM9DH': 'Tire King Moncton',
   'L1674TX09B97B': 'Atlantic Tire King (Oromocto)',
   'LVBRMYPFKX63J': 'Saint John Store',
-  'L11QTEBW25AW6': 'Fredericton Store',
+  'L11QTEBW25AW6': 'Fredericton Tire Outlet',
   'L73PKNCGFQ545': "O'Town Auto and Tire"
 };
 
