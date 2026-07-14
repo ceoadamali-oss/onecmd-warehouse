@@ -637,6 +637,11 @@ export default function App() {
           headers: authHeadersGet()
         });
         if (!res.ok) {
+          if (res.status === 401) {
+            handleLogout();
+            showTemporaryMessage('error', 'Session expired. Please log in again.');
+            return;
+          }
           throw new Error(`API returned status ${res.status}`);
         }
         const data = await res.json();
@@ -661,6 +666,11 @@ export default function App() {
           headers: authHeadersGet()
         });
         if (!res.ok) {
+          if (res.status === 401) {
+            handleLogout();
+            showTemporaryMessage('error', 'Session expired. Please log in again.');
+            return;
+          }
           throw new Error(`API returned status ${res.status}`);
         }
         const data = await res.json();
@@ -6226,6 +6236,7 @@ export default function App() {
         <ReconcileDashboard 
           onBack={() => setActiveTab('dashboard')}
           showTemporaryMessage={showTemporaryMessage}
+          onSessionExpired={handleLogout}
         />
       )}
 

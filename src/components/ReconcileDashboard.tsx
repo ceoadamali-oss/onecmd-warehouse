@@ -13,6 +13,7 @@ import { authHeadersGet } from '../staffAuth';
 interface ReconcileDashboardProps {
   onBack: () => void;
   showTemporaryMessage: (type: 'success' | 'error', text: string) => void;
+  onSessionExpired: () => void;
 }
 
 interface SummaryRow {
@@ -31,7 +32,7 @@ interface DeductionDetail {
   qty: number;
 }
 
-export function ReconcileDashboard({ onBack, showTemporaryMessage }: ReconcileDashboardProps) {
+export function ReconcileDashboard({ onBack, showTemporaryMessage, onSessionExpired }: ReconcileDashboardProps) {
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState<SummaryRow[]>([]);
   const [details, setDetails] = useState<Record<string, DeductionDetail[]>>({});
@@ -44,6 +45,11 @@ export function ReconcileDashboard({ onBack, showTemporaryMessage }: ReconcileDa
         headers: authHeadersGet()
       });
       if (!res.ok) {
+        if (res.status === 401) {
+          onSessionExpired();
+          showTemporaryMessage('error', 'Session expired. Please log in again.');
+          return;
+        }
         throw new Error(`API returned ${res.status}`);
       }
       const data = await res.json();
