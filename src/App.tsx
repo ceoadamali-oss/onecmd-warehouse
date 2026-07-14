@@ -646,8 +646,9 @@ export default function App() {
         const incoming = localTxs.filter(tx => tx.to_location === activeLocation && tx.status === 'pending');
         setPendingTransfers(incoming as any);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Failed to load pending transfers:', e);
+      showTemporaryMessage('error', `Failed to load pending transfers: ${e.message}`);
     }
   };
 
