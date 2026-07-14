@@ -308,6 +308,8 @@ export default async function handler(req, res) {
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
+  }
+
   // --- ACTION 3: PENDING TRANSFERS ---
   if (action === 'pending-transfers') {
     const { locationId } = req.query || {};
