@@ -159,6 +159,110 @@ export default async function handler(req, res) {
     }
   }
 
+  // --- ACTION: DISPUTE TRANSFER ---
+  if (action === 'dispute_transfer') {
+    const { transactionId, receivedQuantity, notes, verifiedBy } = body;
+    if (!transactionId || typeof receivedQuantity !== 'number' || receivedQuantity < 0 || !verifiedBy) {
+      return res.status(400).json({ error: 'Missing or invalid parameters for dispute_transfer action.' });
+    }
+
+    try {
+      console.log(`⚡ [API Serverless] Disputing transfer transaction ${transactionId}...`);
+      
+      const { data: tx, error: fetchErr } = await supabase
+        .from('inventory_transactions')
+        .select('*')
+        .eq('id', transactionId)
+        .maybeSingle();
+
+      if (fetchErr) throw fetchErr;
+      if (!tx) return res.status(404).json({ error: 'Transaction not found' });
+
+      const newNotes = tx.notes ? `${tx.notes} | Dispute Notes: ${notes || ''}` : (notes || '');
+
+      const { error: updateErr } = await supabase
+        .from('inventory_transactions')
+        .update({
+          status: 'discrepancy',
+          received_quantity: receivedQuantity,
+          notes: newNotes,
+          verified_at: new Date().toISOString(),
+          verified_by: verifiedBy
+        })
+        .eq('id', transactionId);
+
+      if (updateErr) throw updateErr;
+
+      return res.status(200).json({ success: true, status: 'discrepancy' });
+    } catch (error) {
+      console.error('❌ [API Serverless] Dispute transfer failed:', error.message);
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // --- ACTION: RESOLVE DISCREPANCY ---
+  if (action === 'resolve_discrepancy') {
+    const { transactionId, resolvedQuantity, notes } = body;
+    if (!transactionId || typeof resolvedQuantity !== 'number' || resolvedQuantity < 0) {
+      return res.status(400).json({ error: 'Missing or invalid parameters for resolve_discrepancy action.' });
+    }
+
+    try {
+      console.log(`⚡ [API Serverless] Resolving discrepancy for transaction ${transactionId}...`);
+
+      const { data: tx, error: fetchErr } = await supabase
+        .from('inventory_transactions')
+        .select('*')
+        .eq('id', transactionId)
+        .maybeSingle();
+
+      if (fetchErr) throw fetchErr;
+      if (!tx) return res.status(404).json({ error: 'Transaction not found' });
+
+      // Calculate difference between final resolved quantity and original sent quantity
+      const diff = resolvedQuantity - tx.quantity;
+
+      // 1. Return the stock difference back to the sender store: add -diff
+      let senderUpdate = null;
+      if (tx.from_location) {
+        senderUpdate = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, tx.from_location, -diff, tx.product_id);
+      }
+
+      // 2. Add the final resolved quantity to the receiver store
+      const receiverLoc = tx.to_location || tx.verified_by;
+      let receiverUpdate = null;
+      if (receiverLoc) {
+        receiverUpdate = await serverUpdateStockLevel(supabase, tx.sku, tx.product_type, receiverLoc, resolvedQuantity, tx.product_id);
+      }
+
+      const newNotes = tx.notes ? `${tx.notes} | Resolution Notes: ${notes || ''}` : (notes || '');
+
+      // 3. Update transaction to completed
+      const { error: updateErr } = await supabase
+        .from('inventory_transactions')
+        .update({
+          quantity: resolvedQuantity,
+          received_quantity: resolvedQuantity,
+          status: 'completed',
+          notes: newNotes,
+          verified_at: new Date().toISOString()
+        })
+        .eq('id', transactionId);
+
+      if (updateErr) throw updateErr;
+
+      return res.status(200).json({ 
+        success: true, 
+        resolvedQuantity,
+        senderUpdate,
+        receiverUpdate
+      });
+    } catch (error) {
+      console.error('❌ [API Serverless] Resolve discrepancy failed:', error.message);
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
   // --- ACTION: LEGACY VERIFY SINGLE ITEM ---
   const { transactionId, receivedQuantity, verifiedBy } = body;
   if (!transactionId || typeof receivedQuantity !== 'number' || receivedQuantity < 0 || !verifiedBy) {

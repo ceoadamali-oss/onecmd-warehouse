@@ -329,5 +329,24 @@ export default async function handler(req, res) {
     }
   }
 
+  // --- ACTION 4: DISPUTED TRANSFERS ---
+  if (action === 'disputed-transfers') {
+    const { locationId } = req.query || {};
+    if (!locationId) {
+      return res.status(400).json({ error: 'locationId is required' });
+    }
+    try {
+      const { data, error } = await supabase
+        .from('inventory_transactions')
+        .select('*')
+        .eq('status', 'discrepancy')
+        .or(`from_location.eq.${locationId},to_location.eq.${locationId}`);
+      if (error) throw error;
+      return res.status(200).json(data || []);
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
   return res.status(400).json({ error: 'Invalid or missing action parameter' });
 }

@@ -4,12 +4,13 @@ export interface PendingTransaction {
   product_type: 'tire' | 'wheel';
   transaction_type: 'receive' | 'transfer';
   quantity: number;
+  received_quantity?: number | null;
   from_location?: string;
   to_location?: string;
   supplier_container?: string;
   employee_id: string;
   notes?: string;
-  status: 'pending' | 'completed' | 'needs_correction' | 'corrected';
+  status: 'pending' | 'completed' | 'needs_correction' | 'corrected' | 'discrepancy';
   created_at: string;
 }
 

@@ -229,9 +229,10 @@ export default function App() {
   // Core Feature State: Handshake Verification
   const [pendingTransfers, setPendingTransfers] = useState<PendingTransaction[]>([]);
   const [selectedTransfer, setSelectedTransfer] = useState<PendingTransaction | null>(null);
-  const [verifyPhoto, setVerifyPhoto] = useState<string | null>(null);
   const [verifyQty, setVerifyQty] = useState<string>('');
   const [verifyingTransfer, setVerifyingTransfer] = useState<boolean>(false);
+  const [verifyNotes, setVerifyNotes] = useState<string>('');
+  const [disputedTransfers, setDisputedTransfers] = useState<PendingTransaction[]>([]);
 
   // Core Feature State: Estimator
   const [estimatorPhoto, setEstimatorPhoto] = useState<string | null>(null);
@@ -291,7 +292,6 @@ export default function App() {
 
   // File Inputs references for opening camera
   const transferFileRef = useRef<HTMLInputElement>(null);
-  const verifyFileRef = useRef<HTMLInputElement>(null);
   const estimatorFileRef = useRef<HTMLInputElement>(null);
   const auditFileRef = useRef<HTMLInputElement>(null);
 
@@ -577,6 +577,7 @@ export default function App() {
   useEffect(() => {
     if (activeLocation) {
       loadPendingIncomingTransfers();
+      loadDisputedTransfers();
       loadPendingOrders();
       loadMissingPhotoCount();
       if (activeTab === 'logs') {
@@ -649,6 +650,24 @@ export default function App() {
     } catch (e: any) {
       console.warn('Failed to load pending transfers:', e);
       showTemporaryMessage('error', `Failed to load pending transfers: ${e.message}`);
+    }
+  };
+
+  const loadDisputedTransfers = async () => {
+    if (!activeLocation) return;
+    try {
+      if (isOnline) {
+        const res = await fetch(`/api/catalog-queries?action=disputed-transfers&locationId=${activeLocation}`, {
+          headers: authHeadersGet()
+        });
+        if (!res.ok) {
+          throw new Error(`API returned status ${res.status}`);
+        }
+        const data = await res.json();
+        setDisputedTransfers(data || []);
+      }
+    } catch (e: any) {
+      console.warn('Failed to load disputed transfers:', e);
     }
   };
 
@@ -1895,7 +1914,8 @@ export default function App() {
           body: JSON.stringify({
             transactionId: selectedTransfer.id,
             receivedQuantity: qty,
-            verifiedBy: activeLocation!
+            verifiedBy: activeLocation!,
+            notes: verifyNotes.trim()
           })
         });
 
@@ -1929,14 +1949,131 @@ export default function App() {
       }
 
       setSelectedTransfer(null);
-      setVerifyPhoto(null);
       setVerifyQty('');
+      setVerifyNotes('');
       setActiveTab('dashboard');
       loadPendingIncomingTransfers();
     } catch (e: any) {
       showTemporaryMessage('error', `Failed to confirm receipt: ${e.message}`);
     } finally {
       setVerifyingTransfer(false);
+    }
+  };
+
+  const handleDisputeReceipt = async () => {
+    if (!selectedTransfer || !verifyQty) return;
+    const qty = parseInt(verifyQty);
+    if (isNaN(qty) || qty < 0) {
+      showTemporaryMessage('error', 'Please enter a valid received quantity.');
+      return;
+    }
+    const noteText = verifyNotes.trim();
+    if (!noteText) {
+      showTemporaryMessage('error', 'A dispute note is required to reject/dispute a transfer.');
+      return;
+    }
+
+    setVerifyingTransfer(true);
+    try {
+      if (isOnline) {
+        const response = await fetch('/api/verify-transfer', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({
+            action: 'dispute_transfer',
+            transactionId: selectedTransfer.id,
+            receivedQuantity: qty,
+            notes: noteText,
+            verifiedBy: activeLocation!
+          })
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(errText);
+        }
+
+        const resData = await response.json();
+        if (!resData.success) {
+          throw new Error(resData.error || 'Dispute failed');
+        }
+
+        showTemporaryMessage('error', `Transfer disputed: Notification sent to origin store.`);
+      } else {
+        showTemporaryMessage('error', 'Disputing transfers requires an active network connection.');
+        return;
+      }
+
+      setSelectedTransfer(null);
+      setVerifyQty('');
+      setVerifyNotes('');
+      setActiveTab('dashboard');
+      loadPendingIncomingTransfers();
+    } catch (e: any) {
+      showTemporaryMessage('error', `Failed to dispute receipt: ${e.message}`);
+    } finally {
+      setVerifyingTransfer(false);
+    }
+  };
+
+  const [resolvingDiscrepancyId, setResolvingDiscrepancyId] = useState<string | null>(null);
+  const [resolvedQuantities, setResolvedQuantities] = useState<Record<string, string>>({});
+  const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
+
+  const handleResolveDiscrepancy = async (txId: string) => {
+    const qtyStr = resolvedQuantities[txId];
+    if (!qtyStr) {
+      showTemporaryMessage('error', 'Please enter a resolved quantity.');
+      return;
+    }
+    const qty = parseInt(qtyStr);
+    if (isNaN(qty) || qty < 0) {
+      showTemporaryMessage('error', 'Please enter a valid resolved quantity.');
+      return;
+    }
+
+    setResolvingDiscrepancyId(txId);
+    try {
+      const response = await fetch('/api/verify-transfer', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          action: 'resolve_discrepancy',
+          transactionId: txId,
+          resolvedQuantity: qty,
+          notes: (resolutionNotes[txId] || '').trim()
+        })
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(errText);
+      }
+
+      const resData = await response.json();
+      if (!resData.success) {
+        throw new Error(resData.error || 'Resolution failed');
+      }
+
+      showTemporaryMessage('success', `Discrepancy resolved: adjusted to ${qty} pieces.`);
+      
+      setResolvedQuantities(prev => {
+        const copy = { ...prev };
+        delete copy[txId];
+        return copy;
+      });
+      setResolutionNotes(prev => {
+        const copy = { ...prev };
+        delete copy[txId];
+        return copy;
+      });
+
+      loadDisputedTransfers();
+      loadPendingIncomingTransfers();
+    } catch (e: any) {
+      showTemporaryMessage('error', `Resolution failed: ${e.message}`);
+    } finally {
+      setResolvingDiscrepancyId(null);
     }
   };
 
@@ -2204,6 +2341,78 @@ export default function App() {
           <div className="space-y-6 flex-1 flex flex-col justify-between">
             {/* Stack of actions based on roles & permissions */}
             <div className="space-y-4">
+              {/* Discrepancy Alerts Panel */}
+              {disputedTransfers.length > 0 && (
+                <div className="glass-panel border-l-4 border-l-rose-500 bg-rose-500/5 space-y-4">
+                  <div className="flex items-center gap-2 border-b border-glass pb-2">
+                    <AlertTriangle className="w-5 h-5 text-rose-400" />
+                    <h3 className="text-sm font-bold tracking-wider uppercase text-rose-400">⚠️ Discrepancy Alerts</h3>
+                  </div>
+                  <div className="space-y-3">
+                    {disputedTransfers.map(tx => {
+                      const isSender = tx.from_location === activeLocation;
+                      const otherLocId = isSender ? tx.to_location : tx.from_location;
+                      const otherStoreName = locations.find(l => l.id === otherLocId)?.name || otherLocId;
+                      
+                      return (
+                        <div key={tx.id} className="p-3 bg-white/5 border border-glass rounded-xl space-y-2 text-xs">
+                          <div className="flex justify-between items-center">
+                            <span className="font-bold text-white text-sm">{tx.sku}</span>
+                            <span className={`badge ${isSender ? 'badge-rose' : 'badge-amber'}`}>
+                              {isSender ? 'Action Required' : 'Waiting for Resolution'}
+                            </span>
+                          </div>
+                          
+                          <div className="text-gray-400 space-y-1">
+                            <div>Route: <strong>{isSender ? 'Outbound' : 'Inbound'}</strong> ({isSender ? `to ${otherStoreName}` : `from ${otherStoreName}`})</div>
+                            <div>Sent Qty: <strong>{tx.quantity} pieces</strong> | Reported Received: <strong className="text-rose-400">{tx.received_quantity} pieces</strong></div>
+                            {tx.notes && <div className="italic bg-black/30 p-2 rounded border border-glass text-gray-300">Note: "{tx.notes}"</div>}
+                          </div>
+
+                          {isSender ? (
+                            <div className="border-t border-glass pt-2 mt-2 space-y-2">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="flex-1">
+                                  <label className="text-[10px] text-gray-500 block uppercase font-bold mb-1">Confirm Corrected Sent Quantity</label>
+                                  <input 
+                                    type="number" 
+                                    placeholder={tx.received_quantity?.toString() || '0'}
+                                    value={resolvedQuantities[tx.id] ?? ''}
+                                    onChange={e => setResolvedQuantities(prev => ({ ...prev, [tx.id]: e.target.value }))}
+                                    className="w-full bg-black/40 py-1.5 px-2.5 rounded-lg border border-glass text-white outline-none focus:border-cyan-500/50"
+                                  />
+                                </div>
+                                <div className="flex-1">
+                                  <label className="text-[10px] text-gray-500 block uppercase font-bold mb-1">Resolution Note</label>
+                                  <input 
+                                    type="text" 
+                                    placeholder="e.g. Adjusted to 8 pieces"
+                                    value={resolutionNotes[tx.id] ?? ''}
+                                    onChange={e => setResolutionNotes(prev => ({ ...prev, [tx.id]: e.target.value }))}
+                                    className="w-full bg-black/40 py-1.5 px-2.5 rounded-lg border border-glass text-white outline-none focus:border-cyan-500/50"
+                                  />
+                                </div>
+                              </div>
+                              <button 
+                                onClick={() => handleResolveDiscrepancy(tx.id)}
+                                disabled={resolvingDiscrepancyId === tx.id}
+                                className="w-full btn-primary py-2 text-xs bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center gap-1.5"
+                              >
+                                {resolvingDiscrepancyId === tx.id ? <RotateCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+                                Resolve & Update Stock Counts
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="text-[10px] text-amber-500 italic mt-1">
+                              Waiting for {otherStoreName} to correct and confirm the sent count.
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               {/* Super Admin: Live Workforce — always first on dashboard */}
               {isSuperAdminUser && (
                 renderWorkforceMonitor({
@@ -2748,6 +2957,8 @@ export default function App() {
                       key={tx.id}
                       onClick={() => {
                         setSelectedTransfer(tx);
+                        setVerifyQty(tx.quantity.toString());
+                        setVerifyNotes('');
                         setActiveTab('verify');
                       }}
                       className="p-3 bg-white/5 border border-glass rounded-xl flex items-center justify-between cursor-pointer hover:bg-white/10 transition-all"
@@ -4263,7 +4474,7 @@ export default function App() {
           <div className="space-y-6 flex-1 flex flex-col">
             <div className="flex items-center gap-2 mb-2">
               <button 
-                onClick={() => { setSelectedTransfer(null); setVerifyPhoto(null); setVerifyQty(''); }} 
+                onClick={() => { setSelectedTransfer(null); setVerifyQty(''); }} 
                 className="btn-secondary py-2 px-3"
               >
                 <ArrowLeftRight className="w-4 h-4 rotate-180" /> Back
@@ -4288,74 +4499,70 @@ export default function App() {
               </div>
             </div>
 
-            {!verifyPhoto ? (
-              <div 
-                onClick={() => verifyFileRef.current?.click()}
-                className="flex-1 border-2 border-dashed border-glass rounded-2xl flex flex-col items-center justify-center p-8 cursor-pointer hover:border-amber-500/40 transition-all min-h-[220px]"
-              >
-                <Camera className="w-14 h-14 text-gray-500 mb-4" />
-                <span className="font-semibold text-lg text-gray-300">Scan Sticker to Verify Product</span>
+            <div className="space-y-4">
+              <div className="glass-panel p-4 flex items-center justify-between">
+                <div className="flex flex-col">
+                  <span className="font-bold text-lg">Actual Count Received</span>
+                  <span className="text-xs text-gray-500">Shipped: {selectedTransfer.quantity}</span>
+                </div>
                 <input 
-                  type="file" 
-                  accept="image/*" 
-                  capture="environment" 
-                  ref={verifyFileRef}
-                  onChange={e => handleFileChange(e, setVerifyPhoto)}
-                  className="hidden" 
+                  type="text" 
+                  readOnly 
+                  placeholder="0" 
+                  value={verifyQty}
+                  className="text-right text-2xl font-bold bg-transparent border-none outline-none max-w-[150px] p-0 text-amber-400"
                 />
               </div>
-            ) : (
-              <div className="space-y-6 flex-1 flex flex-col">
-                <div className="relative rounded-2xl overflow-hidden border border-glass max-h-[140px]">
-                  <img src={verifyPhoto} alt="Verified Item Preview" className="w-full h-full object-cover" />
-                  <button onClick={() => setVerifyPhoto(null)} className="absolute top-2 right-2 btn-secondary py-1.5 px-3 text-xs">Retake</button>
-                </div>
 
-                <div className="space-y-4 mt-auto">
-                  <div className="glass-panel p-4 flex items-center justify-between">
-                    <div className="flex flex-col">
-                      <span className="font-bold text-lg">Actual Count Received</span>
-                      <span className="text-xs text-gray-500">Shipped: {selectedTransfer.quantity}</span>
-                    </div>
-                    <input 
-                      type="text" 
-                      readOnly 
-                      placeholder="0" 
-                      value={verifyQty}
-                      className="text-right text-2xl font-bold bg-transparent border-none outline-none max-w-[150px] p-0 text-amber-400"
-                    />
-                  </div>
-
-                  <div className="keypad-grid">
-                    {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫'].map(btn => (
-                      <button 
-                        key={btn} 
-                        onClick={() => handleKeypadPress(btn, verifyQty, setVerifyQty)}
-                        className={`keypad-btn ${['C','⌫'].includes(btn) ? 'keypad-btn-action' : ''}`}
-                      >
-                        {btn}
-                      </button>
-                    ))}
-                  </div>
-
-                  {verifyQty && parseInt(verifyQty) !== selectedTransfer.quantity && (
-                    <div className="flex items-center gap-2 text-amber-500 bg-amber-500/10 p-3 rounded-lg border border-amber-500/20 text-xs">
-                      <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                      <span>Warning: Received quantity differs from shipped quantity. Discrepancy will be logged!</span>
-                    </div>
-                  )}
-
+              <div className="keypad-grid">
+                {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫'].map(btn => (
                   <button 
-                    onClick={handleConfirmReceipt}
-                    disabled={verifyingTransfer || !verifyQty}
-                    className="w-full btn-primary mt-4 py-4 bg-gradient-to-r from-amber-600 to-amber-500 shadow-amber-500/10"
+                    type="button"
+                    key={btn} 
+                    onClick={() => handleKeypadPress(btn, verifyQty, setVerifyQty)}
+                    className={`keypad-btn ${['C','⌫'].includes(btn) ? 'keypad-btn-action' : ''}`}
                   >
-                    {verifyingTransfer ? <RotateCw className="w-5 h-5 animate-spin" /> : <Check className="w-5 h-5" />}
-                    Confirm Receipt & Update Inventory
+                    {btn}
                   </button>
-                </div>
+                ))}
               </div>
-            )}
+
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">
+                  Verification Notes / Comments {parseInt(verifyQty) !== selectedTransfer.quantity ? '(Required for Dispute)' : '(Optional)'}
+                </label>
+                <textarea 
+                  value={verifyNotes}
+                  onChange={e => setVerifyNotes(e.target.value)}
+                  placeholder={parseInt(verifyQty) !== selectedTransfer.quantity ? "Please explain why there is a discrepancy... (e.g. only received 8 pieces)" : "Add comments..."}
+                  className="w-full h-16 text-xs p-3 bg-black/40 border border-glass rounded-xl text-white outline-none focus:border-cyan-500/50"
+                />
+              </div>
+
+              {verifyQty && parseInt(verifyQty) !== selectedTransfer.quantity && (
+                <div className="flex items-center gap-2 text-rose-400 bg-rose-500/10 p-3 rounded-lg border border-rose-500/20 text-xs">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>Discrepancy detected! You must write a note and click "Not Approved (Dispute)" below to alert the sender store.</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4 mt-4">
+                <button 
+                  onClick={handleDisputeReceipt}
+                  disabled={verifyingTransfer || !verifyQty || (parseInt(verifyQty) !== selectedTransfer.quantity && !verifyNotes.trim())}
+                  className="btn-secondary py-3.5 text-xs bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border-rose-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {verifyingTransfer ? <RotateCw className="w-4 h-4 animate-spin inline-block mr-1" /> : '❌ Not Approved (Dispute)'}
+                </button>
+                <button 
+                  onClick={handleConfirmReceipt}
+                  disabled={verifyingTransfer || !verifyQty || parseInt(verifyQty) !== selectedTransfer.quantity}
+                  className="btn-primary py-3.5 text-xs bg-gradient-to-r from-emerald-600 to-emerald-500 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {verifyingTransfer ? <RotateCw className="w-4 h-4 animate-spin inline-block mr-1" /> : '✔️ Approve & Receive'}
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
