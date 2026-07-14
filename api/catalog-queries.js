@@ -6,6 +6,27 @@ const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
 const supabaseServiceKey = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || '';
 const supabase = (supabaseUrl && supabaseServiceKey) ? createClient(supabaseUrl, supabaseServiceKey) : null;
 
+async function getSquareToken() {
+  if (process.env.SQUARE_ACCESS_TOKEN) {
+    return process.env.SQUARE_ACCESS_TOKEN;
+  }
+  if (supabase) {
+    try {
+      const { data } = await supabase
+        .from('tires_catalog')
+        .select('location_counts')
+        .eq('sku', 'CONFIG-EMPLOYEES')
+        .maybeSingle();
+      if (data?.location_counts?.squareToken) {
+        return data.location_counts.squareToken;
+      }
+    } catch (e) {
+      console.error('Failed to resolve square token from database config:', e);
+    }
+  }
+  return null;
+}
+
 const STORES = {
   'L72FDHCQVM9DH': 'Tire King Moncton',
   'L1674TX09B97B': 'Atlantic Tire King (Oromocto)',
@@ -31,9 +52,10 @@ function cleanSizeForMatching(sz) {
 }
 
 async function squareRequest(path, method = 'GET', body = null) {
+  const token = await getSquareToken();
   const url = `https://connect.squareup.com/v2${path}`;
   const headers = {
-    'Authorization': `Bearer ${SQUARE_ACCESS_TOKEN}`,
+    'Authorization': `Bearer ${token}`,
     'Square-Version': '2024-03-20',
     'Content-Type': 'application/json'
   };
@@ -114,7 +136,8 @@ export default async function handler(req, res) {
   // --- ACTION 2: LIVE RECONCILIATION SUMMARY ---
   if (action === 'reconcile') {
     try {
-      if (!SQUARE_ACCESS_TOKEN) {
+      const token = await getSquareToken();
+      if (!token) {
         return res.status(500).json({ error: 'Square token not configured' });
       }
 
