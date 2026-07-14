@@ -3,7 +3,7 @@ const STORES = [
   { id: 'oromocto', lat: 45.8398, lng: -66.4767 },
   { id: 'fredericton', lat: 45.9389, lng: -66.6656 },
   { id: 'saint-john', lat: 45.2889, lng: -66.0547 },
-  { id: 'otown', lat: 45.8312, lng: -66.4923 },
+  { id: 'otown', lat: 45.8418, lng: -66.5007 },
 ];
 
 const RADIUS_KM = 0.3;

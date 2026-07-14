@@ -10,14 +10,16 @@ const STORES = {
   'L72FDHCQVM9DH': 'Tire King Moncton',
   'L1674TX09B97B': 'Atlantic Tire King (Oromocto)',
   'LVBRMYPFKX63J': 'Saint John Store',
-  'L11QTEBW25AW6': 'Fredericton Store'
+  'L11QTEBW25AW6': 'Fredericton Store',
+  'L73PKNCGFQ545': "O'Town Auto and Tire"
 };
 
 const dbLocationKeys = {
   'L72FDHCQVM9DH': 'moncton',
   'L1674TX09B97B': 'oromocto',
   'LVBRMYPFKX63J': 'saint-john',
-  'L11QTEBW25AW6': 'fredericton'
+  'L11QTEBW25AW6': 'fredericton',
+  'L73PKNCGFQ545': 'otown'
 };
 
 function normalizeText(text) {
@@ -202,7 +204,8 @@ export default async function handler(req, res) {
         'L72FDHCQVM9DH': 0,
         'L1674TX09B97B': 0,
         'LVBRMYPFKX63J': 0,
-        'L11QTEBW25AW6': 0
+        'L11QTEBW25AW6': 0,
+        'L73PKNCGFQ545': 0
       };
 
       dbProducts.forEach(p => {
@@ -217,7 +220,8 @@ export default async function handler(req, res) {
         'L72FDHCQVM9DH': [],
         'L1674TX09B97B': [],
         'LVBRMYPFKX63J': [],
-        'L11QTEBW25AW6': []
+        'L11QTEBW25AW6': [],
+        'L73PKNCGFQ545': []
       };
 
       const orders = ordersRes.orders || [];
@@ -229,6 +233,7 @@ export default async function handler(req, res) {
         else if (locName.includes('oromocto') || locName.includes('atlantic')) locId = 'L1674TX09B97B';
         else if (locName.includes('saint') || locName.includes('st') || locName.includes('john')) locId = 'LVBRMYPFKX63J';
         else if (locName.includes('fredericton')) locId = 'L11QTEBW25AW6';
+        else if (locName.includes('otown') || locName.includes('warehouse')) locId = 'L73PKNCGFQ545';
 
         if (!locId) continue;
 

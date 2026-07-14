@@ -6,7 +6,7 @@ export const STORE_LOCATIONS = [
   { id: 'oromocto', name: 'Tire King Oromocto', lat: 45.8398, lng: -66.4767 },
   { id: 'fredericton', name: 'Tire King Fredericton', lat: 45.9389, lng: -66.6656 },
   { id: 'saint-john', name: 'Tire King Saint John', lat: 45.2889, lng: -66.0547 },
-  { id: 'otown', name: "Tire King O'Town Auto", lat: 45.8312, lng: -66.4923 },
+  { id: 'otown', name: "O'Town Auto and Tire", lat: 45.8418, lng: -66.5007 },
 ] as const;
 
 export type StoreId = (typeof STORE_LOCATIONS)[number]['id'];
