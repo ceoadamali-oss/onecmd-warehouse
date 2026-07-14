@@ -575,7 +575,7 @@ export default function App() {
 
   // Fetch pending incoming transfers & customer orders when logged in
   useEffect(() => {
-    if (activeLocation) {
+    if (activeLocation && currentUser) {
       loadPendingIncomingTransfers();
       loadDisputedTransfers();
       loadPendingOrders();
@@ -584,7 +584,7 @@ export default function App() {
         fetchRecentTransactions();
       }
     }
-  }, [activeLocation, activeTab]);
+  }, [activeLocation, currentUser, activeTab]);
 
   // Dynamic SKU check as user updates brand, size, or model manually
   useEffect(() => {
@@ -630,7 +630,7 @@ export default function App() {
   };
 
   const loadPendingIncomingTransfers = async () => {
-    if (!activeLocation) return;
+    if (!activeLocation || !currentUser) return;
     try {
       if (isOnline) {
         const res = await fetch(`/api/catalog-queries?action=pending-transfers&locationId=${activeLocation}`, {
@@ -659,7 +659,7 @@ export default function App() {
   };
 
   const loadDisputedTransfers = async () => {
-    if (!activeLocation) return;
+    if (!activeLocation || !currentUser) return;
     try {
       if (isOnline) {
         const res = await fetch(`/api/catalog-queries?action=disputed-transfers&locationId=${activeLocation}`, {
