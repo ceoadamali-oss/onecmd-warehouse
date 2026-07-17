@@ -682,20 +682,26 @@ export default function App() {
   };
 
   const loadPendingOrders = async () => {
-    if (!activeLocation) return;
+    if (!activeLocation || !currentUser) return;
     try {
       if (isOnline) {
-        const { data, error } = await supabase
-          .from('customer_orders')
-          .select('*')
-          .eq('location_id', activeLocation)
-          .eq('status', 'pending_shipping');
-        if (error) throw error;
+        const res = await fetch(`/api/catalog-queries?action=get-customer-orders&locationId=${activeLocation}`, {
+          headers: authHeadersGet()
+        });
+        if (!res.ok) {
+          if (res.status === 401) {
+            handleLogout();
+            showTemporaryMessage('error', 'Session expired. Please log in again.');
+            return;
+          }
+          throw new Error(`API returned status ${res.status}`);
+        }
+        const data = await res.json();
         setOrders(data || []);
       } else {
         setOrders([]);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Failed to load orders:', e);
     }
   };
@@ -719,20 +725,21 @@ export default function App() {
 
         if (orderErr) throw orderErr;
 
-        // 2. Log transaction and update catalog stock counts via serverless API
-        for (const item of order.items) {
-          const txData = {
-            sku: item.sku,
-            product_type: 'tire' as const,
-            transaction_type: 'transfer' as const,
-            quantity: item.quantity,
-            from_location: activeLocation!,
-            to_location: 'shipped',
-            employee_id: 'auto_shipping',
-            notes: `Shipped order ${order.order_number} to ${order.customer_name}. Tracking: ${trackingInput}`,
-            status: 'completed' as const
-          };
-          await syncTransactionWithServer(txData);
+        // 2. Complete fulfillment and attach tracking number in Square
+        const completeRes = await fetch('/api/transaction', {
+          method: 'POST',
+          headers: authHeadersGet({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            action: 'complete_square_order',
+            orderId: order.id,
+            trackingNumber: trackingInput,
+            carrier: 'Standard Shipping'
+          })
+        });
+
+        if (!completeRes.ok) {
+          const errData = await completeRes.json();
+          throw new Error(errData.error || 'Failed to update order in Square');
         }
       } else {
         showTemporaryMessage('error', 'Shipping tracking updates require an online connection.');
@@ -1840,6 +1847,12 @@ export default function App() {
 
   const submitRedesignedTransferBatch = async () => {
     if (transferCart.length === 0 || !transferDest) return;
+
+    if (activeLocation === transferDest) {
+      showTemporaryMessage('error', 'Source and Destination locations must be different.');
+      return;
+    }
+
     setSendingTransfer(true);
     try {
       const transferGroupId = `TRF-${Date.now()}`;

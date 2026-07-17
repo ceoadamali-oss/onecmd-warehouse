@@ -6,6 +6,53 @@ const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
 const supabaseServiceKey = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || '';
 const supabase = (supabaseUrl && supabaseServiceKey) ? createClient(supabaseUrl, supabaseServiceKey) : null;
 
+async function getSquareToken() {
+  if (process.env.SQUARE_ACCESS_TOKEN) {
+    return process.env.SQUARE_ACCESS_TOKEN;
+  }
+  if (supabase) {
+    try {
+      const { data } = await supabase
+        .from('tires_catalog')
+        .select('location_counts')
+        .eq('sku', 'CONFIG-EMPLOYEES')
+        .maybeSingle();
+      if (data?.location_counts?.squareToken) {
+        return data.location_counts.squareToken;
+      }
+    } catch (e) {
+      console.error('Failed to resolve square token from database config:', e);
+    }
+  }
+  return null;
+}
+
+async function squareRequest(path, method = 'GET', body = null) {
+  const token = await getSquareToken();
+  const url = `https://connect.squareup.com/v2${path}`;
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Square-Version': '2024-03-20',
+    'Content-Type': 'application/json'
+  };
+
+  const options = {
+    method,
+    headers
+  };
+
+  if (body) {
+    options.body = JSON.stringify(body);
+  }
+
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Square API Failed: ${method} ${path} -> ${response.status} - ${errorText}`);
+  }
+  return await response.json();
+}
+
 // Base64 helper for image upload
 function base64ToBuffer(base64Str) {
   const cleanBase64 = base64Str.replace(/^data:image\/\w+;base64,/, '');
@@ -324,6 +371,10 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing required transfer batch parameters.' });
     }
 
+    if (fromLocation === toLocation) {
+      return res.status(400).json({ error: 'Source and Destination locations must be different.' });
+    }
+
     try {
       const { data, error } = await supabase.rpc('submit_transfer_batch', {
         p_transfer_group_id: transferGroupId,
@@ -409,6 +460,55 @@ export default async function handler(req, res) {
       await supabase.from('inventory_transactions').delete().eq('id', transactionId);
       return res.status(200).json({ success: true, revertedTransaction: tx, stockRevert: stockRevertResult });
     } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // --- ACTION 4: COMPLETE SQUARE ORDER ---
+  if (action === 'complete_square_order') {
+    const { orderId, trackingNumber, carrier } = body;
+    if (!orderId || !trackingNumber) {
+      return res.status(400).json({ error: 'Missing required parameters: orderId, trackingNumber' });
+    }
+
+    try {
+      console.log(`🔍 Retrieving Square order ${orderId} to get current version...`);
+      const orderRes = await squareRequest(`/orders/${orderId}`, 'GET');
+      const order = orderRes.order;
+      if (!order) {
+        return res.status(404).json({ error: `Order ${orderId} not found in Square.` });
+      }
+
+      const fulfillments = order.fulfillments || [];
+      const shipment = fulfillments.find(f => f.type === 'SHIPMENT');
+      if (!shipment) {
+        return res.status(400).json({ error: `Order ${orderId} does not have a shipment fulfillment.` });
+      }
+
+      const updatePayload = {
+        order: {
+          location_id: order.location_id,
+          version: order.version,
+          fulfillments: [
+            {
+              uid: shipment.uid,
+              state: 'COMPLETED',
+              shipment_details: {
+                tracking_number: trackingNumber,
+                carrier: carrier || 'Standard Shipping'
+              }
+            }
+          ]
+        },
+        idempotency_key: `ship_order_${orderId}_${Date.now()}`
+      };
+
+      console.log(`⚡ Updating Square order ${orderId} fulfillment state to COMPLETED...`);
+      const updateRes = await squareRequest(`/orders/${orderId}`, 'PUT', updatePayload);
+      
+      return res.status(200).json({ success: true, order: updateRes.order });
+    } catch (error) {
+      console.error(`❌ [API Serverless] complete_square_order failed:`, error.message);
       return res.status(500).json({ error: error.message });
     }
   }
